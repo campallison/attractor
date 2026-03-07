@@ -301,13 +301,13 @@ func mapFinishReason(raw string) string {
 
 // doRequest sends an HTTP POST to the OpenRouter chat completions endpoint and
 // returns the raw response body. It maps HTTP errors to typed errors.
-func doRequest(ctx context.Context, httpClient *http.Client, apiKey string, orReq orRequest) ([]byte, error) {
+func doRequest(ctx context.Context, httpClient *http.Client, baseURL, apiKey string, orReq orRequest) ([]byte, error) {
 	payload, err := json.Marshal(orReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	url := openRouterBaseURL + "/chat/completions"
+	url := baseURL + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return nil, &NetworkError{Message: "failed to build HTTP request", Cause: err}

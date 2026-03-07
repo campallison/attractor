@@ -78,7 +78,7 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 		return Response{}, err
 	}
 
-	body, err := doRequest(ctx, c.httpClient, c.apiKey, orReq)
+	body, err := doRequest(ctx, c.httpClient, c.baseURL, c.apiKey, orReq)
 	if err != nil {
 		return Response{}, err
 	}
