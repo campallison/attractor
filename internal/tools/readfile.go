@@ -28,7 +28,7 @@ func ReadFileTool() RegisteredTool {
 				"properties": {
 					"file_path": {
 						"type": "string",
-						"description": "Absolute or relative path to the file"
+						"description": "Relative path to the file (must stay within working directory)"
 					},
 					"offset": {
 						"type": "integer",
@@ -52,7 +52,10 @@ func executeReadFile(rawArgs json.RawMessage, workDir string) (string, error) {
 		return "", fmt.Errorf("invalid read_file arguments: %w", err)
 	}
 
-	path := resolvePath(args.FilePath, workDir)
+	path, err := resolvePath(args.FilePath, workDir)
+	if err != nil {
+		return "", fmt.Errorf("read_file: %w", err)
+	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -108,10 +111,18 @@ func isBinary(data []byte) bool {
 	return bytes.ContainsRune(data[:checkLen], 0)
 }
 
-// resolvePath makes a relative path absolute against the working directory.
-func resolvePath(path, workDir string) string {
+// resolvePath resolves a relative path against workDir and enforces that the
+// result stays inside workDir. Absolute paths are rejected outright.
+func resolvePath(path, workDir string) (string, error) {
 	if filepath.IsAbs(path) {
-		return path
+		return "", fmt.Errorf("absolute paths are not allowed: %s", path)
 	}
-	return filepath.Join(workDir, path)
+	joined := filepath.Join(workDir, path)
+	cleaned := filepath.Clean(joined)
+	cleanedRoot := filepath.Clean(workDir)
+	if cleaned != cleanedRoot &&
+		!strings.HasPrefix(cleaned, cleanedRoot+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes working directory: %s", path)
+	}
+	return cleaned, nil
 }

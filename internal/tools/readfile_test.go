@@ -85,6 +85,107 @@ func TestExecuteReadFile(t *testing.T) {
 	}
 }
 
+func TestResolvePath(t *testing.T) {
+	workDir := "/home/user/project"
+
+	tests := []struct {
+		name    string
+		path    string
+		want    string
+		wantErr string
+	}{
+		{
+			name: "simple relative path",
+			path: "src/main.go",
+			want: "/home/user/project/src/main.go",
+		},
+		{
+			name: "current directory",
+			path: ".",
+			want: "/home/user/project",
+		},
+		{
+			name: "nested subdirectory",
+			path: "a/b/c/file.txt",
+			want: "/home/user/project/a/b/c/file.txt",
+		},
+		{
+			name:    "absolute path rejected",
+			path:    "/etc/passwd",
+			wantErr: "absolute paths are not allowed",
+		},
+		{
+			name:    "dot-dot escape rejected",
+			path:    "../secret.txt",
+			wantErr: "path escapes working directory",
+		},
+		{
+			name:    "deep dot-dot escape rejected",
+			path:    "../../.ssh/id_rsa",
+			wantErr: "path escapes working directory",
+		},
+		{
+			name:    "sneaky dot-dot inside path rejected",
+			path:    "src/../../etc/passwd",
+			wantErr: "path escapes working directory",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolvePath(tt.path, workDir)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecuteReadFile_PathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "safe.txt", "safe content\n")
+
+	tests := []struct {
+		name    string
+		path    string
+		wantErr string
+	}{
+		{
+			name:    "absolute path rejected",
+			path:    "/etc/passwd",
+			wantErr: "absolute paths are not allowed",
+		},
+		{
+			name:    "dot-dot escape rejected",
+			path:    "../../etc/passwd",
+			wantErr: "path escapes working directory",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rawArgs, _ := json.Marshal(readFileArgs{FilePath: tt.path})
+			_, err := executeReadFile(rawArgs, dir)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestExecuteReadFileOffsetLimit(t *testing.T) {
 	dir := t.TempDir()
 	var lines []string

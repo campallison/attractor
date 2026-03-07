@@ -210,3 +210,57 @@ func TestHandlerRegistry_Resolve(t *testing.T) {
 func handlerTypeName(h Handler) string {
 	return fmt.Sprintf("%T", h)
 }
+
+func TestSanitizeNodeID(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+		want string
+	}{
+		{name: "simple id", id: "plan", want: "plan"},
+		{name: "id with hyphen", id: "code-review", want: "code-review"},
+		{name: "dot-dot escape", id: "../escape", want: "__escape"},
+		{name: "deep dot-dot escape", id: "../../etc", want: "____etc"},
+		{name: "slash in id", id: "a/b/c", want: "a_b_c"},
+		{name: "dot-dot and slash combined", id: "../../etc/passwd", want: "____etc_passwd"},
+		{name: "empty string", id: "", want: "_unnamed"},
+		{name: "just dots", id: "..", want: "_"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeNodeID(tt.id)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("sanitizeNodeID(%q) mismatch (-want +got):\n%s", tt.id, diff)
+			}
+		})
+	}
+}
+
+func TestCodergenHandler_PathTraversalNodeID(t *testing.T) {
+	logsRoot := t.TempDir()
+	h := CodergenHandler{Backend: nil}
+	node := &dot.Node{ID: "../../etc", Attrs: map[string]string{
+		"shape":  "box",
+		"prompt": "try to escape",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	h.Execute(node, NewContext(), g, logsRoot)
+
+	// The sanitized directory should be inside logsRoot, not above it.
+	sanitized := sanitizeNodeID("../../etc")
+	expectedDir := filepath.Join(logsRoot, sanitized)
+	if _, err := os.Stat(expectedDir); err != nil {
+		t.Fatalf("expected sanitized directory %q to exist: %v", expectedDir, err)
+	}
+	if _, err := os.Stat(filepath.Join(expectedDir, "prompt.md")); err != nil {
+		t.Fatalf("prompt.md should exist in sanitized directory: %v", err)
+	}
+
+	// Verify nothing was written above logsRoot by checking the parent.
+	parent := filepath.Dir(logsRoot)
+	escaped := filepath.Join(parent, "etc")
+	if _, err := os.Stat(escaped); err == nil {
+		t.Errorf("path traversal succeeded: directory %q should not exist", escaped)
+	}
+}

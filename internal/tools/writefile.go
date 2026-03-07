@@ -25,7 +25,7 @@ func WriteFileTool() RegisteredTool {
 				"properties": {
 					"file_path": {
 						"type": "string",
-						"description": "Absolute or relative path to the file"
+						"description": "Relative path to the file (must stay within working directory)"
 					},
 					"content": {
 						"type": "string",
@@ -45,7 +45,10 @@ func executeWriteFile(rawArgs json.RawMessage, workDir string) (string, error) {
 		return "", fmt.Errorf("invalid write_file arguments: %w", err)
 	}
 
-	path := resolvePath(args.FilePath, workDir)
+	path, err := resolvePath(args.FilePath, workDir)
+	if err != nil {
+		return "", fmt.Errorf("write_file: %w", err)
+	}
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

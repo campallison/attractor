@@ -27,7 +27,7 @@ func EditFileTool() RegisteredTool {
 				"properties": {
 					"file_path": {
 						"type": "string",
-						"description": "Absolute or relative path to the file"
+						"description": "Relative path to the file (must stay within working directory)"
 					},
 					"old_string": {
 						"type": "string",
@@ -55,7 +55,10 @@ func executeEditFile(rawArgs json.RawMessage, workDir string) (string, error) {
 		return "", fmt.Errorf("invalid edit_file arguments: %w", err)
 	}
 
-	path := resolvePath(args.FilePath, workDir)
+	path, err := resolvePath(args.FilePath, workDir)
+	if err != nil {
+		return "", fmt.Errorf("edit_file: %w", err)
+	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {

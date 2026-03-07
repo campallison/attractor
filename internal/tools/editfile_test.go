@@ -110,3 +110,39 @@ func TestExecuteEditFile(t *testing.T) {
 		})
 	}
 }
+
+func TestExecuteEditFile_PathTraversal(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr string
+	}{
+		{
+			name:    "absolute path rejected",
+			path:    "/etc/hosts",
+			wantErr: "absolute paths are not allowed",
+		},
+		{
+			name:    "dot-dot escape rejected",
+			path:    "../../.ssh/config",
+			wantErr: "path escapes working directory",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			rawArgs, _ := json.Marshal(editFileArgs{
+				FilePath:  tt.path,
+				OldString: "a",
+				NewString: "b",
+			})
+			_, err := executeEditFile(rawArgs, dir)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}

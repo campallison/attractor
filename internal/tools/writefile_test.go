@@ -73,3 +73,35 @@ func TestExecuteWriteFile(t *testing.T) {
 		})
 	}
 }
+
+func TestExecuteWriteFile_PathTraversal(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr string
+	}{
+		{
+			name:    "absolute path rejected",
+			path:    "/tmp/evil.txt",
+			wantErr: "absolute paths are not allowed",
+		},
+		{
+			name:    "dot-dot escape rejected",
+			path:    "../escape.txt",
+			wantErr: "path escapes working directory",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			rawArgs, _ := json.Marshal(writeFileArgs{FilePath: tt.path, Content: "malicious"})
+			_, err := executeWriteFile(rawArgs, dir)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}

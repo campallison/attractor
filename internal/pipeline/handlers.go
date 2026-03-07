@@ -64,7 +64,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	}
 	prompt = expandVariables(prompt, g, ctx)
 
-	stageDir := filepath.Join(logsRoot, node.ID)
+	stageDir := filepath.Join(logsRoot, sanitizeNodeID(node.ID))
 	_ = os.MkdirAll(stageDir, 0o755)
 	_ = os.WriteFile(filepath.Join(stageDir, "prompt.md"), []byte(prompt), 0o644)
 
@@ -108,6 +108,17 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// sanitizeNodeID strips path separators and parent-directory components from a
+// node ID so it cannot be used to traverse outside the logs root.
+func sanitizeNodeID(id string) string {
+	id = strings.ReplaceAll(id, "..", "_")
+	id = strings.ReplaceAll(id, string(filepath.Separator), "_")
+	if id == "" {
+		id = "_unnamed"
+	}
+	return id
 }
 
 // statusJSON is the on-disk format for status.json, matching Appendix C.
