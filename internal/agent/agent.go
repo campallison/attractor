@@ -107,6 +107,58 @@ func executeTool(registry *tools.Registry, tc llm.ToolCall, workDir string) llm.
 	}
 }
 
+// RunTaskCapture runs the same agentic loop as RunTask but captures and
+// returns the final assistant text response instead of printing it. Used by
+// the pipeline engine's codergen handler.
+func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDir string) (string, error) {
+	registry := tools.DefaultRegistry("attractor-sandbox")
+	systemPrompt := BuildSystemPrompt(workDir)
+
+	conversation := []llm.Message{
+		llm.SystemMessage(systemPrompt),
+		llm.UserMessage(prompt),
+	}
+
+	toolDefs := registry.Definitions()
+	var lastText string
+
+	for round := 0; round < maxRounds; round++ {
+		resp, err := client.Complete(ctx, llm.Request{
+			Model:    model,
+			Messages: conversation,
+			Tools:    toolDefs,
+		})
+		if err != nil {
+			return "", fmt.Errorf("agent: LLM call failed on round %d: %w", round, err)
+		}
+
+		if text := resp.Text(); text != "" {
+			lastText = text
+		}
+
+		toolCalls := resp.ToolCalls()
+		if len(toolCalls) == 0 {
+			return lastText, nil
+		}
+
+		conversation = append(conversation, resp.Message)
+
+		for _, tc := range toolCalls {
+			result := executeTool(registry, tc, workDir)
+			conversation = append(conversation, llm.ToolResultMessage(
+				result.ToolCallID,
+				result.Content,
+				result.IsError,
+			))
+		}
+	}
+
+	if lastText != "" {
+		return lastText, nil
+	}
+	return "", fmt.Errorf("agent: round limit (%d) reached with no final response", maxRounds)
+}
+
 // summarize returns the first n characters of s, appending "..." if truncated.
 func summarize(s string, n int) string {
 	if len(s) <= n {
