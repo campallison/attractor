@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/campallison/attractor/internal/dot"
@@ -495,5 +496,39 @@ func TestRun_FallbackEdgeSelection(t *testing.T) {
 	// Fallback edge selection means the pipeline still reaches exit.
 	if diff := cmp.Diff(StatusSuccess, result.Status); diff != "" {
 		t.Errorf("fallback edge should route to exit (-want +got):\n%s", diff)
+	}
+}
+
+func TestRun_MaxIterationsExceeded(t *testing.T) {
+	g := &dot.Graph{
+		Name:  "Cycle",
+		Attrs: map[string]string{},
+		Nodes: []*dot.Node{
+			{ID: "start", Attrs: map[string]string{"shape": "Mdiamond"}},
+			{ID: "a", Attrs: map[string]string{"shape": "box", "prompt": "loop"}},
+			{ID: "b", Attrs: map[string]string{"shape": "box", "prompt": "loop"}},
+			{ID: "exit", Attrs: map[string]string{"shape": "Msquare"}},
+		},
+		Edges: []*dot.Edge{
+			{From: "start", To: "a", Attrs: map[string]string{}},
+			{From: "a", To: "b", Attrs: map[string]string{}},
+			{From: "b", To: "a", Attrs: map[string]string{}},
+		},
+	}
+
+	result, err := Run(RunConfig{
+		Graph:         g,
+		LogsRoot:      t.TempDir(),
+		Registry:      DefaultHandlerRegistry(nil),
+		MaxIterations: 5,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if diff := cmp.Diff(StatusFail, result.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+	if !strings.Contains(result.FailureReason, "max iterations") {
+		t.Errorf("expected failure reason to mention max iterations, got %q", result.FailureReason)
 	}
 }

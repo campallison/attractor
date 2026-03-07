@@ -15,9 +15,10 @@ import (
 
 // RunConfig holds the configuration for a pipeline run.
 type RunConfig struct {
-	Graph    *dot.Graph
-	LogsRoot string
-	Registry *HandlerRegistry
+	Graph         *dot.Graph
+	LogsRoot      string
+	Registry      *HandlerRegistry
+	MaxIterations int // 0 means use default (1000)
 }
 
 // RunResult is the final outcome of a pipeline execution.
@@ -51,7 +52,23 @@ func Run(cfg RunConfig) (RunResult, error) {
 
 	current := startNode
 
+	maxIter := cfg.MaxIterations
+	if maxIter <= 0 {
+		maxIter = 1000
+	}
+	iterations := 0
+
 	for {
+		iterations++
+		if iterations > maxIter {
+			return RunResult{
+				Status:         StatusFail,
+				CompletedNodes: completedNodes,
+				NodeOutcomes:   nodeOutcomes,
+				FailureReason:  fmt.Sprintf("max iterations (%d) exceeded -- possible cycle", maxIter),
+			}, nil
+		}
+
 		// Step 1: Check for terminal node.
 		if isTerminal(current) {
 			gateOK, failedGate := checkGoalGates(g, nodeOutcomes)

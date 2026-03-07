@@ -216,6 +216,28 @@ func TestExecuteReadFileOffsetLimit(t *testing.T) {
 	}
 }
 
+func TestExecuteReadFile_FileTooLarge(t *testing.T) {
+	dir := t.TempDir()
+
+	// Temporarily lower the size limit for this test.
+	original := maxReadFileSize
+	maxReadFileSize = 100
+	t.Cleanup(func() { maxReadFileSize = original })
+
+	// Create a file that exceeds the lowered limit.
+	bigContent := strings.Repeat("x", 200)
+	writeTestFile(t, dir, "big.txt", bigContent)
+
+	rawArgs, _ := json.Marshal(readFileArgs{FilePath: "big.txt"})
+	_, err := executeReadFile(rawArgs, dir)
+	if err == nil {
+		t.Fatal("expected error for oversized file, got nil")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Errorf("error %q does not contain %q", err.Error(), "too large")
+	}
+}
+
 func writeTestFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {

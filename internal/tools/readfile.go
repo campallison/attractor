@@ -11,6 +11,10 @@ import (
 	"github.com/campallison/attractor/internal/llm"
 )
 
+// maxReadFileSize is the largest file (in bytes) that read_file will load into
+// memory. Defined as a variable so tests can temporarily lower it.
+var maxReadFileSize int64 = 10 * 1024 * 1024 // 10MB
+
 type readFileArgs struct {
 	FilePath string `json:"file_path"`
 	Offset   int    `json:"offset"`
@@ -55,6 +59,14 @@ func executeReadFile(rawArgs json.RawMessage, workDir string) (string, error) {
 	path, err := resolvePath(args.FilePath, workDir)
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("read_file: %w", err)
+	}
+	if info.Size() > maxReadFileSize {
+		return "", fmt.Errorf("read_file: %s is too large (%d bytes, max %d)", args.FilePath, info.Size(), maxReadFileSize)
 	}
 
 	data, err := os.ReadFile(path)
