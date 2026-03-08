@@ -27,6 +27,7 @@ type RunResult struct {
 	CompletedNodes []string
 	NodeOutcomes   map[string]Outcome
 	FailureReason  string
+	Warnings       []string
 }
 
 // Run executes a parsed and validated pipeline graph from start to exit. It
@@ -42,6 +43,7 @@ func Run(cfg RunConfig) (RunResult, error) {
 	mirrorGraphAttributes(g, ctx)
 
 	var completedNodes []string
+	var warnings []string
 	nodeOutcomes := make(map[string]Outcome)
 	nodeRetries := make(map[string]int)
 
@@ -66,6 +68,7 @@ func Run(cfg RunConfig) (RunResult, error) {
 				CompletedNodes: completedNodes,
 				NodeOutcomes:   nodeOutcomes,
 				FailureReason:  fmt.Sprintf("max iterations (%d) exceeded -- possible cycle", maxIter),
+				Warnings:       warnings,
 			}, nil
 		}
 
@@ -86,12 +89,14 @@ func Run(cfg RunConfig) (RunResult, error) {
 					CompletedNodes: completedNodes,
 					NodeOutcomes:   nodeOutcomes,
 					FailureReason:  fmt.Sprintf("goal gate %q unsatisfied and no retry target", failedGate.ID),
+					Warnings:       warnings,
 				}, nil
 			}
 			return RunResult{
 				Status:         StatusSuccess,
 				CompletedNodes: completedNodes,
 				NodeOutcomes:   nodeOutcomes,
+				Warnings:       warnings,
 			}, nil
 		}
 
@@ -115,7 +120,9 @@ func Run(cfg RunConfig) (RunResult, error) {
 		// Step 5: Save checkpoint.
 		cp := NewCheckpoint(current.ID, completedNodes, nodeRetries, ctx)
 		cpPath := filepath.Join(logsRoot, "checkpoint.json")
-		_ = cp.Save(cpPath)
+		if err := cp.Save(cpPath); err != nil {
+			warnings = append(warnings, fmt.Sprintf("checkpoint save failed: %v", err))
+		}
 
 		// Step 6: Select next edge.
 		nextEdge := SelectEdge(current.ID, outcome, ctx, g)
@@ -126,6 +133,7 @@ func Run(cfg RunConfig) (RunResult, error) {
 					CompletedNodes: completedNodes,
 					NodeOutcomes:   nodeOutcomes,
 					FailureReason:  fmt.Sprintf("node %q failed with no outgoing fail edge", current.ID),
+					Warnings:       warnings,
 				}, nil
 			}
 			// No more edges -- pipeline complete.
@@ -133,6 +141,7 @@ func Run(cfg RunConfig) (RunResult, error) {
 				Status:         StatusSuccess,
 				CompletedNodes: completedNodes,
 				NodeOutcomes:   nodeOutcomes,
+				Warnings:       warnings,
 			}, nil
 		}
 
@@ -276,6 +285,8 @@ func isTerminal(node *dot.Node) bool {
 
 // --- Retry logic (spec Section 3.5) ---
 
+const maxRetriesCap = 100
+
 func executeWithRetry(h Handler, node *dot.Node, ctx *Context, g *dot.Graph, logsRoot string, nodeRetries map[string]int) Outcome {
 	maxRetries := node.MaxRetries()
 	graphDefault := 0
@@ -283,6 +294,9 @@ func executeWithRetry(h Handler, node *dot.Node, ctx *Context, g *dot.Graph, log
 		if parsed, err := fmt.Sscanf(v, "%d", &graphDefault); parsed == 1 && err == nil && maxRetries == 0 {
 			maxRetries = graphDefault
 		}
+	}
+	if maxRetries > maxRetriesCap {
+		maxRetries = maxRetriesCap
 	}
 	maxAttempts := maxRetries + 1
 

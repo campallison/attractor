@@ -499,6 +499,32 @@ func TestRun_FallbackEdgeSelection(t *testing.T) {
 	}
 }
 
+func TestRun_CheckpointWarning(t *testing.T) {
+	g := linearGraph()
+	// Use a path that cannot be written to trigger a checkpoint save error.
+	result, err := Run(RunConfig{
+		Graph:    g,
+		LogsRoot: "/dev/null/impossible",
+		Registry: DefaultHandlerRegistry(nil),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Warnings) == 0 {
+		t.Fatal("expected at least one warning about checkpoint save failure")
+	}
+	foundCheckpoint := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "checkpoint") {
+			foundCheckpoint = true
+			break
+		}
+	}
+	if !foundCheckpoint {
+		t.Errorf("expected a warning mentioning 'checkpoint', got %v", result.Warnings)
+	}
+}
+
 func TestRun_MaxIterationsExceeded(t *testing.T) {
 	g := &dot.Graph{
 		Name:  "Cycle",

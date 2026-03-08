@@ -194,6 +194,29 @@ func TestValidateOrError_AcceptsValid(t *testing.T) {
 	}
 }
 
+func TestValidate_MaxRetriesTooHigh(t *testing.T) {
+	g := validGraph()
+	g.Nodes[1].Attrs["max_retries"] = "500"
+	diags := Validate(g)
+	found := findDiag(diags, "max_retries_cap")
+	if found == nil {
+		t.Fatal("expected max_retries_cap warning for max_retries=500")
+	}
+	if diff := cmp.Diff(SeverityWarning, found.Severity); diff != "" {
+		t.Errorf("severity mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestValidate_MaxRetriesOK(t *testing.T) {
+	g := validGraph()
+	g.Nodes[1].Attrs["max_retries"] = "5"
+	diags := Validate(g)
+	found := findDiag(diags, "max_retries_cap")
+	if found != nil {
+		t.Errorf("unexpected max_retries_cap diagnostic for max_retries=5: %s", found)
+	}
+}
+
 func findDiag(diags []Diagnostic, rule string) *Diagnostic {
 	for i := range diags {
 		if diags[i].Rule == rule {

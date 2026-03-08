@@ -65,6 +65,7 @@ func Validate(g *dot.Graph) []Diagnostic {
 	diags = append(diags, checkRetryTargetExists(g)...)
 	diags = append(diags, checkGoalGateHasRetry(g)...)
 	diags = append(diags, checkPromptOnLLMNodes(g)...)
+	diags = append(diags, checkMaxRetries(g)...)
 	return diags
 }
 
@@ -373,6 +374,25 @@ func checkPromptOnLLMNodes(g *dot.Graph) []Diagnostic {
 					Fix:      "add a prompt or label attribute",
 				})
 			}
+		}
+	}
+	return diags
+}
+
+const maxRetriesTolerance = 100
+
+func checkMaxRetries(g *dot.Graph) []Diagnostic {
+	var diags []Diagnostic
+	for _, n := range g.Nodes {
+		mr := n.MaxRetries()
+		if mr > maxRetriesTolerance {
+			diags = append(diags, Diagnostic{
+				Rule:     "max_retries_cap",
+				Severity: SeverityWarning,
+				Message:  fmt.Sprintf("max_retries=%d exceeds cap (%d); will be clamped at runtime", mr, maxRetriesTolerance),
+				NodeID:   n.ID,
+				Fix:      fmt.Sprintf("set max_retries to %d or lower", maxRetriesTolerance),
+			})
 		}
 	}
 	return diags
