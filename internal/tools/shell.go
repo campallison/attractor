@@ -50,6 +50,12 @@ func ShellTool(dockerImage string) RegisteredTool {
 	}
 }
 
+// makeShellExecutor returns a ToolExecutor that runs commands via docker exec.
+//
+// Timeout limitation: context.WithTimeout only kills the local docker-exec
+// client process. The command running inside the container may continue after
+// the client disconnects. For stronger enforcement, wrap commands with the
+// `timeout` utility inside the container (e.g., `sh -c "timeout 120 <cmd>"`).
 func makeShellExecutor(dockerImage string) ToolExecutor {
 	return func(rawArgs json.RawMessage, workDir string) (string, error) {
 		var args shellArgs
@@ -132,10 +138,14 @@ func filterEnvVars(environ []string) []string {
 }
 
 // isSensitiveKey returns true if the environment variable name matches
-// patterns known to contain secrets.
+// patterns known to contain secrets. The suffix list intentionally casts a
+// wide net -- in a Docker sandbox, over-filtering is safer than leaking.
 func isSensitiveKey(key string) bool {
 	upper := strings.ToUpper(key)
-	suffixes := []string{"_API_KEY", "_SECRET", "_TOKEN", "_PASSWORD", "_CREDENTIAL"}
+	suffixes := []string{
+		"_API_KEY", "_SECRET", "_TOKEN", "_PASSWORD", "_CREDENTIAL",
+		"_KEY", "_CREDENTIALS", "_PASSWD", "_AUTH", "_PRIVATE",
+	}
 	for _, s := range suffixes {
 		if strings.HasSuffix(upper, s) {
 			return true

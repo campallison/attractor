@@ -76,6 +76,21 @@ func TestFilterEnvVars(t *testing.T) {
 			},
 		},
 		{
+			name: "strips broader sensitive suffixes",
+			input: []string{
+				"PRIVATE_KEY=pk",
+				"GOOGLE_APPLICATION_CREDENTIALS=/path/to/creds.json",
+				"MYSQL_PASSWD=secret",
+				"BASIC_AUTH=user:pass",
+				"GITHUB_PRIVATE=yes",
+				"ENCRYPTION_KEY=aes256",
+				"EDITOR=vim",
+			},
+			want: []string{
+				"EDITOR=vim",
+			},
+		},
+		{
 			name:  "empty input",
 			input: []string{},
 			want:  []string{},
@@ -96,17 +111,30 @@ func TestIsSensitiveKey(t *testing.T) {
 		key  string
 		want bool
 	}{
+		// Original suffixes
 		{"OPENROUTER_API_KEY", true},
 		{"DB_SECRET", true},
 		{"AUTH_TOKEN", true},
 		{"ADMIN_PASSWORD", true},
 		{"AWS_CREDENTIAL", true},
 		{"my_api_key", true},
+
+		// Broader suffixes added for hardening
+		{"PRIVATE_KEY", true},
+		{"ENCRYPTION_KEY", true},
+		{"GOOGLE_APPLICATION_CREDENTIALS", true},
+		{"MYSQL_PASSWD", true},
+		{"BASIC_AUTH", true},
+		{"GITHUB_PRIVATE", true},
+
+		// Negative cases: should NOT be filtered
 		{"PATH", false},
 		{"HOME", false},
 		{"GOPATH", false},
 		{"SECRET_PROJECT_NAME", false},
 		{"TOKENIZER_PATH", false},
+		{"KEYBOARD_LAYOUT", false},
+		{"AUTHOR", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.key, func(t *testing.T) {
