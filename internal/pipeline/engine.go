@@ -28,6 +28,8 @@ type RunResult struct {
 	NodeOutcomes   map[string]Outcome
 	FailureReason  string
 	Warnings       []string
+	TotalUsage     StageUsage
+	StageUsages    map[string]*StageUsage
 }
 
 // Run executes a parsed and validated pipeline graph from start to exit. It
@@ -44,8 +46,10 @@ func Run(cfg RunConfig) (RunResult, error) {
 
 	var completedNodes []string
 	var warnings []string
+	var totalUsage StageUsage
 	nodeOutcomes := make(map[string]Outcome)
 	nodeRetries := make(map[string]int)
+	stageUsages := make(map[string]*StageUsage)
 
 	startNode := g.FindStartNode()
 	if startNode == nil {
@@ -69,6 +73,8 @@ func Run(cfg RunConfig) (RunResult, error) {
 				NodeOutcomes:   nodeOutcomes,
 				FailureReason:  fmt.Sprintf("max iterations (%d) exceeded -- possible cycle", maxIter),
 				Warnings:       warnings,
+				TotalUsage:     totalUsage,
+				StageUsages:    stageUsages,
 			}, nil
 		}
 
@@ -90,6 +96,8 @@ func Run(cfg RunConfig) (RunResult, error) {
 					NodeOutcomes:   nodeOutcomes,
 					FailureReason:  fmt.Sprintf("goal gate %q unsatisfied and no retry target", failedGate.ID),
 					Warnings:       warnings,
+					TotalUsage:     totalUsage,
+					StageUsages:    stageUsages,
 				}, nil
 			}
 			return RunResult{
@@ -97,6 +105,8 @@ func Run(cfg RunConfig) (RunResult, error) {
 				CompletedNodes: completedNodes,
 				NodeOutcomes:   nodeOutcomes,
 				Warnings:       warnings,
+				TotalUsage:     totalUsage,
+				StageUsages:    stageUsages,
 			}, nil
 		}
 
@@ -108,6 +118,14 @@ func Run(cfg RunConfig) (RunResult, error) {
 		// Step 3: Record completion.
 		completedNodes = append(completedNodes, current.ID)
 		nodeOutcomes[current.ID] = outcome
+
+		if outcome.Usage != nil {
+			stageUsages[current.ID] = outcome.Usage
+			totalUsage.InputTokens += outcome.Usage.InputTokens
+			totalUsage.OutputTokens += outcome.Usage.OutputTokens
+			totalUsage.TotalTokens += outcome.Usage.TotalTokens
+			totalUsage.Rounds += outcome.Usage.Rounds
+		}
 
 		// Step 4: Apply context updates.
 		ctx.ApplyUpdates(outcome.ContextUpdates)
@@ -134,6 +152,8 @@ func Run(cfg RunConfig) (RunResult, error) {
 					NodeOutcomes:   nodeOutcomes,
 					FailureReason:  fmt.Sprintf("node %q failed with no outgoing fail edge", current.ID),
 					Warnings:       warnings,
+					TotalUsage:     totalUsage,
+					StageUsages:    stageUsages,
 				}, nil
 			}
 			// No more edges -- pipeline complete.
@@ -142,6 +162,8 @@ func Run(cfg RunConfig) (RunResult, error) {
 				CompletedNodes: completedNodes,
 				NodeOutcomes:   nodeOutcomes,
 				Warnings:       warnings,
+				TotalUsage:     totalUsage,
+				StageUsages:    stageUsages,
 			}, nil
 		}
 

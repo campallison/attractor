@@ -112,6 +112,66 @@ func TestRunTaskToolCallThenText(t *testing.T) {
 	}
 }
 
+func TestRunTaskCapture_ReturnsUsageAndRounds(t *testing.T) {
+	mock := &mockCompleter{
+		responses: []llm.Response{
+			toolCallResponse("call_1", "write_file", map[string]interface{}{
+				"file_path": "test.txt",
+				"content":   "hello",
+			}),
+			textResponse("File created."),
+		},
+	}
+
+	text, usage, rounds, err := RunTaskCapture(context.Background(), mock, "test-model", "create test.txt", t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if diff := cmp.Diff("File created.", text); diff != "" {
+		t.Errorf("response text mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(2, rounds); diff != "" {
+		t.Errorf("rounds mismatch (-want +got):\n%s", diff)
+	}
+
+	// Usage should be the sum of both rounds:
+	// round 1: input=20, output=10, total=30 (tool call response)
+	// round 2: input=10, output=5, total=15 (text response)
+	if diff := cmp.Diff(30, usage.InputTokens); diff != "" {
+		t.Errorf("input tokens mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(15, usage.OutputTokens); diff != "" {
+		t.Errorf("output tokens mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(45, usage.TotalTokens); diff != "" {
+		t.Errorf("total tokens mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestRunTaskCapture_TextOnly(t *testing.T) {
+	mock := &mockCompleter{
+		responses: []llm.Response{
+			textResponse("Direct answer."),
+		},
+	}
+
+	text, usage, rounds, err := RunTaskCapture(context.Background(), mock, "test-model", "answer me", t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if diff := cmp.Diff("Direct answer.", text); diff != "" {
+		t.Errorf("response text mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(1, rounds); diff != "" {
+		t.Errorf("rounds mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(10, usage.InputTokens); diff != "" {
+		t.Errorf("input tokens mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestRunTaskUnknownTool(t *testing.T) {
 	mock := &mockCompleter{
 		responses: []llm.Response{

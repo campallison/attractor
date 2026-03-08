@@ -109,8 +109,9 @@ func executeTool(registry *tools.Registry, tc llm.ToolCall, workDir string) llm.
 
 // RunTaskCapture runs the same agentic loop as RunTask but captures and
 // returns the final assistant text response instead of printing it. Used by
-// the pipeline engine's codergen handler.
-func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDir string) (string, error) {
+// the pipeline engine's codergen handler. It also returns accumulated token
+// usage and the number of LLM rounds executed.
+func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDir string) (string, llm.Usage, int, error) {
 	registry := tools.DefaultRegistry("attractor-sandbox")
 	systemPrompt := BuildSystemPrompt(workDir)
 
@@ -121,6 +122,7 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 
 	toolDefs := registry.Definitions()
 	var lastText string
+	var totalUsage llm.Usage
 
 	for round := 0; round < maxRounds; round++ {
 		resp, err := client.Complete(ctx, llm.Request{
@@ -129,8 +131,10 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 			Tools:    toolDefs,
 		})
 		if err != nil {
-			return "", fmt.Errorf("agent: LLM call failed on round %d: %w", round, err)
+			return "", totalUsage, round, fmt.Errorf("agent: LLM call failed on round %d: %w", round, err)
 		}
+
+		totalUsage = totalUsage.Add(resp.Usage)
 
 		if text := resp.Text(); text != "" {
 			lastText = text
@@ -138,7 +142,7 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 
 		toolCalls := resp.ToolCalls()
 		if len(toolCalls) == 0 {
-			return lastText, nil
+			return lastText, totalUsage, round + 1, nil
 		}
 
 		conversation = append(conversation, resp.Message)
@@ -154,9 +158,9 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 	}
 
 	if lastText != "" {
-		return lastText, nil
+		return lastText, totalUsage, maxRounds, nil
 	}
-	return "", fmt.Errorf("agent: round limit (%d) reached with no final response", maxRounds)
+	return "", totalUsage, maxRounds, fmt.Errorf("agent: round limit (%d) reached with no final response", maxRounds)
 }
 
 // summarize returns the first n characters of s, appending "..." if truncated.

@@ -28,4 +28,14 @@ type Outcome struct {
 	ContextUpdates   map[string]string
 	Notes            string
 	FailureReason    string
+	Usage            *StageUsage
+}
+
+// StageUsage records token consumption for a single pipeline stage.
+type StageUsage struct {
+	Model        string `json:"model"`
+	Rounds       int    `json:"rounds"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
+	TotalTokens  int    `json:"total_tokens"`
 }

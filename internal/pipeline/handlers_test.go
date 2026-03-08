@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/campallison/attractor/internal/dot"
+	"github.com/campallison/attractor/internal/llm"
 	"github.com/google/go-cmp/cmp"
 )
 
@@ -114,8 +116,8 @@ func TestCodergenHandler_WithBackend(t *testing.T) {
 
 type failingBackend struct{ msg string }
 
-func (b failingBackend) Run(_ *dot.Node, _ string, _ *Context) (string, error) {
-	return "", fmt.Errorf("%s", b.msg)
+func (b failingBackend) Run(_ *dot.Node, _ string, _ *Context) (BackendResult, error) {
+	return BackendResult{}, fmt.Errorf("%s", b.msg)
 }
 
 func TestCodergenHandler_BackendError(t *testing.T) {
@@ -233,6 +235,86 @@ func TestSanitizeNodeID(t *testing.T) {
 				t.Errorf("sanitizeNodeID(%q) mismatch (-want +got):\n%s", tt.id, diff)
 			}
 		})
+	}
+}
+
+type usageBackend struct{}
+
+func (b usageBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {
+	return BackendResult{
+		Response: "generated code for " + node.ID,
+		Usage:    llm.Usage{InputTokens: 5000, OutputTokens: 1200, TotalTokens: 6200},
+		Model:    "anthropic/claude-opus-4.6",
+		Rounds:   7,
+	}, nil
+}
+
+func TestCodergenHandler_WritesUsageJSON(t *testing.T) {
+	logsRoot := t.TempDir()
+	h := CodergenHandler{Backend: usageBackend{}}
+	node := &dot.Node{ID: "gen", Attrs: map[string]string{
+		"shape":  "box",
+		"prompt": "Generate code",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	out := h.Execute(node, NewContext(), g, logsRoot)
+
+	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
+		t.Fatalf("status mismatch (-want +got):\n%s", diff)
+	}
+
+	// Verify usage.json was written.
+	usagePath := filepath.Join(logsRoot, "gen", "usage.json")
+	data, err := os.ReadFile(usagePath)
+	if err != nil {
+		t.Fatalf("usage.json not written: %v", err)
+	}
+
+	var su StageUsage
+	if err := json.Unmarshal(data, &su); err != nil {
+		t.Fatalf("invalid usage.json: %v", err)
+	}
+
+	if diff := cmp.Diff("anthropic/claude-opus-4.6", su.Model); diff != "" {
+		t.Errorf("model mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(7, su.Rounds); diff != "" {
+		t.Errorf("rounds mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(5000, su.InputTokens); diff != "" {
+		t.Errorf("input_tokens mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(1200, su.OutputTokens); diff != "" {
+		t.Errorf("output_tokens mismatch (-want +got):\n%s", diff)
+	}
+
+	// Verify Outcome.Usage is populated.
+	if out.Usage == nil {
+		t.Fatal("expected Outcome.Usage to be non-nil")
+	}
+	if diff := cmp.Diff(6200, out.Usage.TotalTokens); diff != "" {
+		t.Errorf("outcome usage total mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestCodergenHandler_SimulatedMode_NoUsageJSON(t *testing.T) {
+	logsRoot := t.TempDir()
+	h := CodergenHandler{Backend: nil}
+	node := &dot.Node{ID: "sim", Attrs: map[string]string{
+		"shape":  "box",
+		"prompt": "Simulate",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	out := h.Execute(node, NewContext(), g, logsRoot)
+
+	if out.Usage != nil {
+		t.Error("expected nil Usage for simulated (nil backend) handler")
+	}
+	usagePath := filepath.Join(logsRoot, "sim", "usage.json")
+	if _, err := os.Stat(usagePath); err == nil {
+		t.Error("usage.json should not be written when backend is nil")
 	}
 }
 

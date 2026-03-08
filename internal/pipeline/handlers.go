@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/campallison/attractor/internal/dot"
+	"github.com/campallison/attractor/internal/llm"
 )
 
 // --- Start Handler ---
@@ -44,10 +45,18 @@ func (h ConditionalHandler) Execute(node *dot.Node, _ *Context, _ *dot.Graph, _ 
 
 // --- Codergen Handler ---
 
-// CodergenBackend is the interface for LLM execution backends. The pipeline
-// engine only cares that it gets a string response or an error back.
+// BackendResult carries the LLM response and associated token usage from a
+// single codergen stage execution.
+type BackendResult struct {
+	Response string
+	Usage    llm.Usage
+	Model    string
+	Rounds   int
+}
+
+// CodergenBackend is the interface for LLM execution backends.
 type CodergenBackend interface {
-	Run(node *dot.Node, prompt string, ctx *Context) (string, error)
+	Run(node *dot.Node, prompt string, ctx *Context) (BackendResult, error)
 }
 
 // CodergenHandler is the default handler for all LLM task nodes (shape=box).
@@ -69,6 +78,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	_ = os.WriteFile(filepath.Join(stageDir, "prompt.md"), []byte(prompt), 0o644)
 
 	var responseText string
+	var stageUsage *StageUsage
 	if h.Backend != nil {
 		result, err := h.Backend.Run(node, prompt, ctx)
 		if err != nil {
@@ -79,7 +89,17 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 			writeStatus(stageDir, outcome)
 			return outcome
 		}
-		responseText = result
+		responseText = result.Response
+		stageUsage = &StageUsage{
+			Model:        result.Model,
+			Rounds:       result.Rounds,
+			InputTokens:  result.Usage.InputTokens,
+			OutputTokens: result.Usage.OutputTokens,
+			TotalTokens:  result.Usage.TotalTokens,
+		}
+		if usageData, err := json.MarshalIndent(stageUsage, "", "  "); err == nil {
+			_ = os.WriteFile(filepath.Join(stageDir, "usage.json"), usageData, 0o644)
+		}
 	} else {
 		responseText = "[simulated] response for stage: " + node.ID
 	}
@@ -89,6 +109,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	outcome := Outcome{
 		Status: StatusSuccess,
 		Notes:  "stage completed: " + node.ID,
+		Usage:  stageUsage,
 		ContextUpdates: map[string]string{
 			"last_stage":    node.ID,
 			"last_response": truncate(responseText, 200),
@@ -164,6 +185,8 @@ func DefaultHandlerRegistry(backend CodergenBackend) *HandlerRegistry {
 // pipeline engine without making real LLM calls.
 type SimulatedBackend struct{}
 
-func (b SimulatedBackend) Run(node *dot.Node, prompt string, _ *Context) (string, error) {
-	return fmt.Sprintf("[simulated] completed stage %s", node.ID), nil
+func (b SimulatedBackend) Run(node *dot.Node, prompt string, _ *Context) (BackendResult, error) {
+	return BackendResult{
+		Response: fmt.Sprintf("[simulated] completed stage %s", node.ID),
+	}, nil
 }

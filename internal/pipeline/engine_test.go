@@ -525,6 +525,60 @@ func TestRun_CheckpointWarning(t *testing.T) {
 	}
 }
 
+func TestRun_AggregatesUsage(t *testing.T) {
+	g := &dot.Graph{
+		Name:  "UsageTest",
+		Attrs: map[string]string{},
+		Nodes: []*dot.Node{
+			{ID: "start", Attrs: map[string]string{"shape": "Mdiamond"}},
+			{ID: "stage1", Attrs: map[string]string{"shape": "box", "prompt": "first"}},
+			{ID: "stage2", Attrs: map[string]string{"shape": "box", "prompt": "second"}},
+			{ID: "exit", Attrs: map[string]string{"shape": "Msquare"}},
+		},
+		Edges: []*dot.Edge{
+			{From: "start", To: "stage1", Attrs: map[string]string{}},
+			{From: "stage1", To: "stage2", Attrs: map[string]string{}},
+			{From: "stage2", To: "exit", Attrs: map[string]string{}},
+		},
+	}
+
+	result, err := Run(RunConfig{
+		Graph:    g,
+		LogsRoot: t.TempDir(),
+		Registry: DefaultHandlerRegistry(usageBackend{}),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if diff := cmp.Diff(StatusSuccess, result.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+
+	// Two codergen stages, each with 5000 input + 1200 output.
+	if diff := cmp.Diff(10000, result.TotalUsage.InputTokens); diff != "" {
+		t.Errorf("total input tokens mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(2400, result.TotalUsage.OutputTokens); diff != "" {
+		t.Errorf("total output tokens mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(14, result.TotalUsage.Rounds); diff != "" {
+		t.Errorf("total rounds mismatch (-want +got):\n%s", diff)
+	}
+
+	// Per-stage breakdown should have entries for both codergen nodes.
+	if _, ok := result.StageUsages["stage1"]; !ok {
+		t.Error("expected StageUsages to contain stage1")
+	}
+	if _, ok := result.StageUsages["stage2"]; !ok {
+		t.Error("expected StageUsages to contain stage2")
+	}
+
+	// Start and exit nodes should NOT have usage entries.
+	if _, ok := result.StageUsages["start"]; ok {
+		t.Error("start node should not have usage entry")
+	}
+}
+
 func TestRun_MaxIterationsExceeded(t *testing.T) {
 	g := &dot.Graph{
 		Name:  "Cycle",

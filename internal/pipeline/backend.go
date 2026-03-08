@@ -16,10 +16,19 @@ type AgentBackend struct {
 	WorkDir string
 }
 
-func (b AgentBackend) Run(node *dot.Node, prompt string, _ *Context) (string, error) {
+func (b AgentBackend) Run(node *dot.Node, prompt string, _ *Context) (BackendResult, error) {
 	model := node.Model()
 	if model == "" {
 		model = b.Model
 	}
-	return agent.RunTaskCapture(context.Background(), b.Client, model, prompt, b.WorkDir)
+	text, usage, rounds, err := agent.RunTaskCapture(context.Background(), b.Client, model, prompt, b.WorkDir)
+	if err != nil {
+		return BackendResult{}, err
+	}
+	return BackendResult{
+		Response: text,
+		Usage:    usage,
+		Model:    model,
+		Rounds:   rounds,
+	}, nil
 }
