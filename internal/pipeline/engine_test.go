@@ -579,6 +579,82 @@ func TestRun_AggregatesUsage(t *testing.T) {
 	}
 }
 
+func TestRun_BudgetCapExceeded(t *testing.T) {
+	g := &dot.Graph{
+		Name:  "BudgetTest",
+		Attrs: map[string]string{},
+		Nodes: []*dot.Node{
+			{ID: "start", Attrs: map[string]string{"shape": "Mdiamond"}},
+			{ID: "stage1", Attrs: map[string]string{"shape": "box", "prompt": "first"}},
+			{ID: "stage2", Attrs: map[string]string{"shape": "box", "prompt": "second"}},
+			{ID: "exit", Attrs: map[string]string{"shape": "Msquare"}},
+		},
+		Edges: []*dot.Edge{
+			{From: "start", To: "stage1", Attrs: map[string]string{}},
+			{From: "stage1", To: "stage2", Attrs: map[string]string{}},
+			{From: "stage2", To: "exit", Attrs: map[string]string{}},
+		},
+	}
+
+	// usageBackend returns 6200 total tokens per stage.
+	// Cap at 7000: first stage (6200) passes, second stage (12400 cumulative) exceeds.
+	result, err := Run(RunConfig{
+		Graph:           g,
+		LogsRoot:        t.TempDir(),
+		Registry:        DefaultHandlerRegistry(usageBackend{}),
+		MaxBudgetTokens: 7000,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if diff := cmp.Diff(StatusFail, result.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+	if !strings.Contains(result.FailureReason, "budget cap") {
+		t.Errorf("expected failure reason to mention budget cap, got %q", result.FailureReason)
+	}
+	if diff := cmp.Diff(12400, result.TotalUsage.TotalTokens); diff != "" {
+		t.Errorf("total tokens mismatch (-want +got):\n%s", diff)
+	}
+	if _, ok := result.StageUsages["stage1"]; !ok {
+		t.Error("expected StageUsages to contain stage1")
+	}
+	if _, ok := result.StageUsages["stage2"]; !ok {
+		t.Error("expected StageUsages to contain stage2")
+	}
+}
+
+func TestRun_BudgetCapNotExceeded(t *testing.T) {
+	g := &dot.Graph{
+		Name:  "BudgetOK",
+		Attrs: map[string]string{},
+		Nodes: []*dot.Node{
+			{ID: "start", Attrs: map[string]string{"shape": "Mdiamond"}},
+			{ID: "stage1", Attrs: map[string]string{"shape": "box", "prompt": "first"}},
+			{ID: "stage2", Attrs: map[string]string{"shape": "box", "prompt": "second"}},
+			{ID: "exit", Attrs: map[string]string{"shape": "Msquare"}},
+		},
+		Edges: []*dot.Edge{
+			{From: "start", To: "stage1", Attrs: map[string]string{}},
+			{From: "stage1", To: "stage2", Attrs: map[string]string{}},
+			{From: "stage2", To: "exit", Attrs: map[string]string{}},
+		},
+	}
+
+	result, err := Run(RunConfig{
+		Graph:           g,
+		LogsRoot:        t.TempDir(),
+		Registry:        DefaultHandlerRegistry(usageBackend{}),
+		MaxBudgetTokens: 50000,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if diff := cmp.Diff(StatusSuccess, result.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestRun_MaxIterationsExceeded(t *testing.T) {
 	g := &dot.Graph{
 		Name:  "Cycle",

@@ -15,10 +15,11 @@ import (
 
 // RunConfig holds the configuration for a pipeline run.
 type RunConfig struct {
-	Graph         *dot.Graph
-	LogsRoot      string
-	Registry      *HandlerRegistry
-	MaxIterations int // 0 means use default (1000)
+	Graph           *dot.Graph
+	LogsRoot        string
+	Registry        *HandlerRegistry
+	MaxIterations   int // 0 means use default (1000)
+	MaxBudgetTokens int // 0 means no limit
 }
 
 // RunResult is the final outcome of a pipeline execution.
@@ -125,6 +126,18 @@ func Run(cfg RunConfig) (RunResult, error) {
 			totalUsage.OutputTokens += outcome.Usage.OutputTokens
 			totalUsage.TotalTokens += outcome.Usage.TotalTokens
 			totalUsage.Rounds += outcome.Usage.Rounds
+		}
+
+		if cfg.MaxBudgetTokens > 0 && totalUsage.TotalTokens > cfg.MaxBudgetTokens {
+			return RunResult{
+				Status:         StatusFail,
+				CompletedNodes: completedNodes,
+				NodeOutcomes:   nodeOutcomes,
+				FailureReason:  fmt.Sprintf("budget cap exceeded: %d total tokens used (max %d)", totalUsage.TotalTokens, cfg.MaxBudgetTokens),
+				Warnings:       warnings,
+				TotalUsage:     totalUsage,
+				StageUsages:    stageUsages,
+			}, nil
 		}
 
 		// Step 4: Apply context updates.

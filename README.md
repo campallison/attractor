@@ -107,6 +107,7 @@ Key concepts:
 - **Edge conditions:** Edges can have conditions like `condition="outcome=success"` to control routing
 - **Retry:** Nodes support `max_retries` with exponential backoff
 - **Usage tracking:** Each codergen stage writes a `usage.json` with token counts, and the pipeline aggregates totals in `RunResult`
+- **Budget cap:** Set `MaxBudgetTokens` on `RunConfig` to halt the pipeline if cumulative token usage exceeds a threshold
 
 ## Design Decisions
 

@@ -631,7 +631,7 @@ flowchart TD
     Validate --> Diagnostics["[]Diagnostic"]
     Validate --> ValidGraph["Validated Graph"]
 
-    ValidGraph --> RunConfig["RunConfig{\n  Graph,\n  LogsRoot,\n  Registry,\n  MaxIterations\n}"]
+    ValidGraph --> RunConfig["RunConfig{\n  Graph,\n  LogsRoot,\n  Registry,\n  MaxIterations,\n  MaxBudgetTokens\n}"]
 
     LLMClient["llm.NewClientFromEnv()"] --> AgentBackend["AgentBackend{\n  Client,\n  Model,\n  WorkDir\n}"]
     AgentBackend --> Registry["DefaultHandlerRegistry(\n  backend\n)"]
