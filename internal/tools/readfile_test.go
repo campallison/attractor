@@ -186,6 +186,67 @@ func TestExecuteReadFile_PathTraversal(t *testing.T) {
 	}
 }
 
+func TestResolvePath_SymlinkEscape(t *testing.T) {
+	workDir := t.TempDir()
+	outsideDir := t.TempDir()
+
+	// Create a file outside workDir.
+	writeTestFile(t, outsideDir, "secret.txt", "sensitive data\n")
+
+	// Create a symlink inside workDir that points outside.
+	symlinkPath := filepath.Join(workDir, "escape")
+	if err := os.Symlink(outsideDir, symlinkPath); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	_, err := resolvePath("escape/secret.txt", workDir)
+	if err == nil {
+		t.Fatal("expected error for symlink escaping workDir, got nil")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error %q does not contain %q", err.Error(), "symlink")
+	}
+}
+
+func TestResolvePath_SymlinkInsideWorkDir(t *testing.T) {
+	workDir := t.TempDir()
+
+	// Create a real subdirectory and a file inside it.
+	realDir := filepath.Join(workDir, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+	writeTestFile(t, realDir, "file.txt", "safe content\n")
+
+	// Create a symlink inside workDir that points to the real subdirectory.
+	symlinkPath := filepath.Join(workDir, "link")
+	if err := os.Symlink(realDir, symlinkPath); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	got, err := resolvePath("link/file.txt", workDir)
+	if err != nil {
+		t.Fatalf("unexpected error for symlink within workDir: %v", err)
+	}
+	want := filepath.Join(workDir, "link", "file.txt")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestResolvePath_NonexistentFileAllowed(t *testing.T) {
+	workDir := t.TempDir()
+
+	got, err := resolvePath("does/not/exist.txt", workDir)
+	if err != nil {
+		t.Fatalf("unexpected error for nonexistent file: %v", err)
+	}
+	want := filepath.Join(workDir, "does", "not", "exist.txt")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestExecuteReadFileOffsetLimit(t *testing.T) {
 	dir := t.TempDir()
 	var lines []string

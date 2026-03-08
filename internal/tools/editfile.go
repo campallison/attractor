@@ -49,6 +49,11 @@ func EditFileTool() RegisteredTool {
 	}
 }
 
+// executeEditFile reads the file, performs the replacement in memory, and writes
+// it back. This is not atomic -- concurrent modifications to the file between
+// the read and write will be silently overwritten. This is acceptable in the
+// current single-threaded agent loop but should be revisited if parallel tool
+// execution is added.
 func executeEditFile(rawArgs json.RawMessage, workDir string) (string, error) {
 	var args editFileArgs
 	if err := json.Unmarshal(rawArgs, &args); err != nil {

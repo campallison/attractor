@@ -37,7 +37,11 @@ type ProviderError struct {
 	ErrorCode  string
 	Retryable  bool
 	RetryAfter float64     // seconds to wait before retrying (0 = not specified)
-	Raw        interface{} // raw response body for debugging
+	// Raw holds the full HTTP response body for debugging. It is deliberately
+	// excluded from Error() output. Callers should not log this field in
+	// production as it may contain sensitive data (e.g., error details that
+	// echo back parts of the request).
+	Raw interface{}
 }
 
 func (e *ProviderError) Error() string {

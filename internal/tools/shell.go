@@ -156,6 +156,10 @@ func isSensitiveKey(key string) bool {
 
 // EnsureContainer starts the sandbox Docker container if it is not already
 // running. It mounts workDir into /workspace inside the container.
+//
+// This function is not called automatically by the shell tool executor.
+// The caller (e.g., the agent entrypoint or test harness) is responsible for
+// calling EnsureContainer before running tasks and StopContainer afterward.
 func EnsureContainer(dockerImage, workDir string) error {
 	// Check if container is already running.
 	check := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerName)
@@ -181,6 +185,9 @@ func EnsureContainer(dockerImage, workDir string) error {
 }
 
 // StopContainer stops and removes the sandbox container.
+//
+// Must be called explicitly by the caller when the agent session ends.
+// If not called, the container will continue running indefinitely.
 func StopContainer() error {
 	return exec.Command("docker", "rm", "-f", containerName).Run()
 }

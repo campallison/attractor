@@ -124,7 +124,9 @@ func isBinary(data []byte) bool {
 }
 
 // resolvePath resolves a relative path against workDir and enforces that the
-// result stays inside workDir. Absolute paths are rejected outright.
+// result stays inside workDir. Absolute paths are rejected outright. Symlinks
+// are resolved via filepath.EvalSymlinks and containment is re-checked on the
+// real path to prevent symlink-based escapes.
 func resolvePath(path, workDir string) (string, error) {
 	if filepath.IsAbs(path) {
 		return "", fmt.Errorf("absolute paths are not allowed: %s", path)
@@ -135,6 +137,23 @@ func resolvePath(path, workDir string) (string, error) {
 	if cleaned != cleanedRoot &&
 		!strings.HasPrefix(cleaned, cleanedRoot+string(filepath.Separator)) {
 		return "", fmt.Errorf("path escapes working directory: %s", path)
+	}
+
+	// Resolve symlinks and re-check containment on the real path.
+	realPath, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cleaned, nil // file doesn't exist yet (e.g., write_file)
+		}
+		return "", fmt.Errorf("failed to resolve path: %w", err)
+	}
+	realRoot, err := filepath.EvalSymlinks(cleanedRoot)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve working directory: %w", err)
+	}
+	if realPath != realRoot &&
+		!strings.HasPrefix(realPath, realRoot+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes working directory via symlink: %s", path)
 	}
 	return cleaned, nil
 }
