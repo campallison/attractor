@@ -126,6 +126,9 @@ func (n *Node) Type() string { return n.GetAttr("type", "") }
 // Prompt returns the node's "prompt" attribute.
 func (n *Node) Prompt() string { return n.GetAttr("prompt", "") }
 
+// Model returns the node's "model" attribute, or empty string if unset.
+func (n *Node) Model() string { return n.GetAttr("model", "") }
+
 // GoalGate returns true if the node has goal_gate=true.
 func (n *Node) GoalGate() bool { return n.GetBool("goal_gate", false) }
 

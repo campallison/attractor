@@ -17,5 +17,9 @@ type AgentBackend struct {
 }
 
 func (b AgentBackend) Run(node *dot.Node, prompt string, _ *Context) (string, error) {
-	return agent.RunTaskCapture(context.Background(), b.Client, b.Model, prompt, b.WorkDir)
+	model := node.Model()
+	if model == "" {
+		model = b.Model
+	}
+	return agent.RunTaskCapture(context.Background(), b.Client, model, prompt, b.WorkDir)
 }

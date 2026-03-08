@@ -143,6 +143,7 @@ func TestNode_Accessors(t *testing.T) {
 		"goal_gate":   "true",
 		"max_retries": "5",
 		"timeout":     "900s",
+		"model":       "anthropic/claude-sonnet-4",
 	}}
 
 	if diff := cmp.Diff("hexagon", n.Shape()); diff != "" {
@@ -160,6 +161,9 @@ func TestNode_Accessors(t *testing.T) {
 	if diff := cmp.Diff(900*time.Second, n.GetDuration("timeout", 0)); diff != "" {
 		t.Errorf("timeout (-want +got):\n%s", diff)
 	}
+	if diff := cmp.Diff("anthropic/claude-sonnet-4", n.Model()); diff != "" {
+		t.Errorf("model (-want +got):\n%s", diff)
+	}
 }
 
 func TestNode_DefaultValues(t *testing.T) {
@@ -176,6 +180,9 @@ func TestNode_DefaultValues(t *testing.T) {
 	}
 	if diff := cmp.Diff(0, n.MaxRetries()); diff != "" {
 		t.Errorf("default max_retries (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff("", n.Model()); diff != "" {
+		t.Errorf("default model (-want +got):\n%s", diff)
 	}
 }
 
