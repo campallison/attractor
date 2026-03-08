@@ -1,5 +1,5 @@
 .env
-docs/
+development-notes/
 
 # Binaries for programs and plugins
 *.exe

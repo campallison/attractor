@@ -91,7 +91,8 @@ digraph MyPipeline {
     exit  [shape=Msquare]
 
     plan      [shape=box, prompt="Plan the implementation for: $goal"]
-    implement [shape=box, prompt="Implement the plan", goal_gate=true]
+    implement [shape=box, prompt="Implement the plan", goal_gate=true,
+               model="anthropic/claude-opus-4.6"]
 
     start -> plan -> implement -> exit
 }
@@ -101,9 +102,11 @@ Key concepts:
 
 - **Shapes determine behavior:** `Mdiamond` = start, `Msquare` = exit, `box` = LLM task, `diamond` = conditional routing
 - **`$goal` expansion:** The `$goal` variable in prompts is replaced with the graph-level `goal` attribute
+- **Per-node model:** Nodes can specify `model="provider/model-name"` to override the pipeline default
 - **Goal gates:** Nodes with `goal_gate=true` must succeed before the pipeline can exit
 - **Edge conditions:** Edges can have conditions like `condition="outcome=success"` to control routing
 - **Retry:** Nodes support `max_retries` with exponential backoff
+- **Usage tracking:** Each codergen stage writes a `usage.json` with token counts, and the pipeline aggregates totals in `RunResult`
 
 ## Design Decisions
 
