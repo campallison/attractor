@@ -13,9 +13,12 @@ func Parse(src string) (*Graph, error) {
 	return p.parseGraph()
 }
 
+const maxSubgraphDepth = 50
+
 type parser struct {
 	tokens []Token
 	pos    int
+	depth  int
 
 	// nodeDefaults and edgeDefaults track default attribute blocks.
 	nodeDefaults map[string]string
@@ -164,6 +167,13 @@ func (p *parser) parseEdgeDefaults() error {
 // parseSubgraph: 'subgraph' Identifier? '{' Statement* '}'
 // Flattens contents into the parent graph, applying scoped defaults.
 func (p *parser) parseSubgraph(g *Graph) error {
+	p.depth++
+	if p.depth > maxSubgraphDepth {
+		tok := p.peek()
+		return fmt.Errorf("line %d col %d: subgraph nesting exceeds maximum depth (%d)", tok.Line, tok.Col, maxSubgraphDepth)
+	}
+	defer func() { p.depth-- }()
+
 	p.advance() // consume 'subgraph'
 
 	// Optional name

@@ -1,6 +1,8 @@
 package dot
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -397,5 +399,53 @@ func TestParse_Errors(t *testing.T) {
 				t.Error("expected error, got nil")
 			}
 		})
+	}
+}
+
+func TestParse_SubgraphDepthLimit(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("digraph G {\n")
+	depth := 60
+	for i := 0; i < depth; i++ {
+		b.WriteString(fmt.Sprintf("subgraph s%d {\n", i))
+	}
+	b.WriteString("A [label=\"deep\"]\n")
+	for i := 0; i < depth; i++ {
+		b.WriteString("}\n")
+	}
+	b.WriteString("}\n")
+
+	_, err := Parse(b.String())
+	if err == nil {
+		t.Fatal("expected error for deeply nested subgraphs, got nil")
+	}
+	if !strings.Contains(err.Error(), "maximum depth") {
+		t.Errorf("expected error mentioning 'maximum depth', got: %v", err)
+	}
+}
+
+func TestParse_SubgraphWithinLimit(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("digraph G {\n")
+	depth := 5
+	for i := 0; i < depth; i++ {
+		b.WriteString(fmt.Sprintf("subgraph s%d {\n", i))
+	}
+	b.WriteString("A [label=\"ok\"]\n")
+	for i := 0; i < depth; i++ {
+		b.WriteString("}\n")
+	}
+	b.WriteString("}\n")
+
+	g, err := Parse(b.String())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	a := g.NodeByID("A")
+	if a == nil {
+		t.Fatal("node A not found")
+	}
+	if diff := cmp.Diff("ok", a.NodeLabel()); diff != "" {
+		t.Errorf("label mismatch (-want +got):\n%s", diff)
 	}
 }
