@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/campallison/attractor/internal/llm"
@@ -208,4 +210,63 @@ func TestRunTaskUnknownTool(t *testing.T) {
 		}
 	}
 	t.Error("did not find a tool result message in the second call")
+}
+
+// infiniteToolCallCompleter always returns a tool call, never text. Used to
+// test round-limit exhaustion.
+type infiniteToolCallCompleter struct {
+	callCount int
+}
+
+func (m *infiniteToolCallCompleter) Complete(_ context.Context, _ llm.Request) (llm.Response, error) {
+	m.callCount++
+	args, _ := json.Marshal(map[string]string{"file_path": "nonexistent.txt"})
+	return llm.Response{
+		Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Parts: []llm.ContentPart{
+				{
+					Kind: llm.KindText,
+					Text: "Let me read this file...",
+				},
+				{
+					Kind: llm.KindToolCall,
+					ToolCall: &llm.ToolCall{
+						ID:        fmt.Sprintf("call_%d", m.callCount),
+						Name:      "read_file",
+						Arguments: args,
+					},
+				},
+			},
+		},
+		FinishReason: llm.FinishReason{Reason: "tool_calls"},
+		Usage:        llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+	}, nil
+}
+
+func TestRunTaskCapture_RoundLimitReached(t *testing.T) {
+	mock := &infiniteToolCallCompleter{}
+
+	text, usage, rounds, conversation, err := RunTaskCapture(
+		context.Background(), mock, "test-model", "do infinite work", t.TempDir(),
+	)
+
+	if !errors.Is(err, ErrRoundLimitReached) {
+		t.Fatalf("expected ErrRoundLimitReached, got: %v", err)
+	}
+	if diff := cmp.Diff(maxRounds, rounds); diff != "" {
+		t.Errorf("rounds mismatch (-want +got):\n%s", diff)
+	}
+	if text == "" {
+		t.Error("expected lastText to be non-empty (assistant text was present in tool-call responses)")
+	}
+	if usage.TotalTokens == 0 {
+		t.Error("expected non-zero token usage")
+	}
+	if len(conversation) == 0 {
+		t.Error("expected non-empty conversation")
+	}
+	if diff := cmp.Diff(maxRounds, mock.callCount); diff != "" {
+		t.Errorf("expected exactly maxRounds LLM calls (-want +got):\n%s", diff)
+	}
 }

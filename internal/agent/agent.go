@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -13,6 +14,12 @@ import (
 )
 
 const maxRounds = 50
+
+// ErrRoundLimitReached is returned by RunTaskCapture when the agent exhausts
+// all rounds without naturally completing (i.e., the model never stopped
+// calling tools). The caller can still inspect the returned text, usage, and
+// conversation for post-mortem analysis.
+var ErrRoundLimitReached = errors.New("agent: round limit reached without completing task")
 
 // Completer is the interface for making LLM completion calls. Both *llm.Client
 // and test mocks satisfy this interface.
@@ -167,10 +174,7 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 	}
 
 	slog.Warn("agent.round_limit", "rounds", maxRounds, "tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens)
-	if lastText != "" {
-		return lastText, totalUsage, maxRounds, conversation, nil
-	}
-	return "", totalUsage, maxRounds, conversation, fmt.Errorf("agent: round limit (%d) reached with no final response", maxRounds)
+	return lastText, totalUsage, maxRounds, conversation, ErrRoundLimitReached
 }
 
 // summarize returns the first n characters of s, appending "..." if truncated.

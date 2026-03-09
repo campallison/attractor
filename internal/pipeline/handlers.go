@@ -54,6 +54,7 @@ type BackendResult struct {
 	Model        string
 	Rounds       int
 	Conversation []llm.Message
+	Exhausted    bool // true when the agent hit the round limit without completing
 }
 
 // CodergenBackend is the interface for LLM execution backends.
@@ -110,6 +111,18 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 				_ = os.WriteFile(filepath.Join(stageDir, "conversation.json"), convData, 0o644)
 				slog.Info("pipeline.conversation.saved", "node", node.ID, "messages", len(result.Conversation))
 			}
+		}
+		if result.Exhausted {
+			_ = os.WriteFile(filepath.Join(stageDir, "response.md"), []byte(responseText), 0o644)
+			reason := fmt.Sprintf("agent exhausted round limit (%d) without completing task", result.Rounds)
+			slog.Warn("pipeline.stage.exhausted", "node", node.ID, "rounds", result.Rounds)
+			outcome := Outcome{
+				Status:        StatusFail,
+				FailureReason: reason,
+				Usage:         stageUsage,
+			}
+			writeStatus(stageDir, outcome)
+			return outcome
 		}
 	} else {
 		responseText = "[simulated] response for stage: " + node.ID

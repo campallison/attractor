@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -653,6 +654,124 @@ func TestRun_BudgetCapNotExceeded(t *testing.T) {
 	if diff := cmp.Diff(StatusSuccess, result.Status); diff != "" {
 		t.Errorf("status mismatch (-want +got):\n%s", diff)
 	}
+}
+
+func TestRun_FailHaltsOnUnconditionalEdge(t *testing.T) {
+	g := &dot.Graph{
+		Name:  "FailHalt",
+		Attrs: map[string]string{},
+		Nodes: []*dot.Node{
+			{ID: "start", Attrs: map[string]string{"shape": "Mdiamond"}},
+			{ID: "broken", Attrs: map[string]string{"shape": "box", "prompt": "fail here"}},
+			{ID: "downstream", Attrs: map[string]string{"shape": "box", "prompt": "should not run"}},
+			{ID: "exit", Attrs: map[string]string{"shape": "Msquare"}},
+		},
+		Edges: []*dot.Edge{
+			{From: "start", To: "broken", Attrs: map[string]string{}},
+			{From: "broken", To: "downstream", Attrs: map[string]string{}},
+			{From: "downstream", To: "exit", Attrs: map[string]string{}},
+		},
+	}
+
+	registry := NewHandlerRegistry(CodergenHandler{Backend: nil})
+	registry.Register("start", StartHandler{})
+	registry.Register("exit", ExitHandler{})
+	registry.Register("codergen", CodergenHandler{Backend: failingBackend{msg: "stage crashed"}})
+
+	result, err := Run(RunConfig{
+		Graph:    g,
+		LogsRoot: t.TempDir(),
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if diff := cmp.Diff(StatusFail, result.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+	if !strings.Contains(result.FailureReason, "unconditional edge") {
+		t.Errorf("expected failure reason to mention unconditional edge, got %q", result.FailureReason)
+	}
+	if !strings.Contains(result.FailureReason, "broken") {
+		t.Errorf("expected failure reason to mention the failed node, got %q", result.FailureReason)
+	}
+	// "downstream" should NOT appear in completed nodes.
+	for _, n := range result.CompletedNodes {
+		if n == "downstream" {
+			t.Error("downstream node should not have been reached after unconditional fail")
+		}
+	}
+}
+
+func TestRun_FailContinuesOnConditionalEdge(t *testing.T) {
+	g := &dot.Graph{
+		Name:  "FailRecover",
+		Attrs: map[string]string{},
+		Nodes: []*dot.Node{
+			{ID: "start", Attrs: map[string]string{"shape": "Mdiamond"}},
+			{ID: "risky", Attrs: map[string]string{"shape": "box", "prompt": "might fail"}},
+			{ID: "recover", Attrs: map[string]string{"shape": "box", "prompt": "handle failure"}},
+			{ID: "exit", Attrs: map[string]string{"shape": "Msquare"}},
+		},
+		Edges: []*dot.Edge{
+			{From: "start", To: "risky", Attrs: map[string]string{}},
+			{From: "risky", To: "recover", Attrs: map[string]string{"condition": "outcome=fail"}},
+			{From: "risky", To: "exit", Attrs: map[string]string{"condition": "outcome=success"}},
+			{From: "recover", To: "exit", Attrs: map[string]string{}},
+		},
+	}
+
+	// Register a backend that fails for "risky" but succeeds for "recover".
+	riskyFail := &nodeSelectiveBackend{
+		failNodes: map[string]bool{"risky": true},
+	}
+
+	registry := NewHandlerRegistry(CodergenHandler{Backend: nil})
+	registry.Register("start", StartHandler{})
+	registry.Register("exit", ExitHandler{})
+	registry.Register("codergen", CodergenHandler{Backend: riskyFail})
+
+	result, err := Run(RunConfig{
+		Graph:    g,
+		LogsRoot: t.TempDir(),
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if diff := cmp.Diff(StatusSuccess, result.Status); diff != "" {
+		t.Errorf("pipeline should succeed via recovery path (-want +got):\n%s", diff)
+	}
+	// Both risky and recover should appear in completed nodes.
+	foundRisky, foundRecover := false, false
+	for _, n := range result.CompletedNodes {
+		if n == "risky" {
+			foundRisky = true
+		}
+		if n == "recover" {
+			foundRecover = true
+		}
+	}
+	if !foundRisky {
+		t.Error("expected 'risky' in completed nodes")
+	}
+	if !foundRecover {
+		t.Error("expected 'recover' in completed nodes")
+	}
+}
+
+// nodeSelectiveBackend fails for nodes in failNodes, succeeds for all others.
+type nodeSelectiveBackend struct {
+	failNodes map[string]bool
+}
+
+func (b *nodeSelectiveBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {
+	if b.failNodes[node.ID] {
+		return BackendResult{}, fmt.Errorf("simulated failure for %s", node.ID)
+	}
+	return BackendResult{
+		Response: "completed " + node.ID,
+	}, nil
 }
 
 func TestRun_MaxIterationsExceeded(t *testing.T) {

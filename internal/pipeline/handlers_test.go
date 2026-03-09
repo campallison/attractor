@@ -238,6 +238,73 @@ func TestSanitizeNodeID(t *testing.T) {
 	}
 }
 
+type exhaustedBackend struct {
+	rounds int
+}
+
+func (b exhaustedBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {
+	return BackendResult{
+		Response:  "Let me read the handler files...",
+		Usage:     llm.Usage{InputTokens: 50000, OutputTokens: 8000, TotalTokens: 58000},
+		Model:     "anthropic/claude-opus-4.6",
+		Rounds:    b.rounds,
+		Exhausted: true,
+	}, nil
+}
+
+func TestCodergenHandler_ExhaustedBackend(t *testing.T) {
+	logsRoot := t.TempDir()
+	h := CodergenHandler{Backend: exhaustedBackend{rounds: 50}}
+	node := &dot.Node{ID: "stuck_stage", Attrs: map[string]string{
+		"shape":  "box",
+		"prompt": "Implement the feature",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	out := h.Execute(node, NewContext(), g, logsRoot)
+
+	if diff := cmp.Diff(StatusFail, out.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+	if !strings.Contains(out.FailureReason, "exhausted round limit") {
+		t.Errorf("expected failure reason to mention round limit exhaustion, got %q", out.FailureReason)
+	}
+	if !strings.Contains(out.FailureReason, "50") {
+		t.Errorf("expected failure reason to include round count, got %q", out.FailureReason)
+	}
+	if out.Usage == nil {
+		t.Fatal("expected usage to be recorded even on exhaustion")
+	}
+	if diff := cmp.Diff(58000, out.Usage.TotalTokens); diff != "" {
+		t.Errorf("usage total tokens mismatch (-want +got):\n%s", diff)
+	}
+
+	// Artifacts should still be written for post-mortem.
+	stageDir := filepath.Join(logsRoot, "stuck_stage")
+	if _, err := os.Stat(filepath.Join(stageDir, "prompt.md")); err != nil {
+		t.Errorf("prompt.md should be written even on exhaustion: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stageDir, "response.md")); err != nil {
+		t.Errorf("response.md should be written even on exhaustion: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stageDir, "status.json")); err != nil {
+		t.Errorf("status.json should be written even on exhaustion: %v", err)
+	}
+
+	// Verify status.json has the correct outcome.
+	statusData, err := os.ReadFile(filepath.Join(stageDir, "status.json"))
+	if err != nil {
+		t.Fatalf("reading status.json: %v", err)
+	}
+	var sj statusJSON
+	if err := json.Unmarshal(statusData, &sj); err != nil {
+		t.Fatalf("parsing status.json: %v", err)
+	}
+	if diff := cmp.Diff("fail", sj.Outcome); diff != "" {
+		t.Errorf("status.json outcome mismatch (-want +got):\n%s", diff)
+	}
+}
+
 type usageBackend struct{}
 
 func (b usageBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 
 	"github.com/campallison/attractor/internal/agent"
 	"github.com/campallison/attractor/internal/dot"
@@ -22,6 +23,16 @@ func (b AgentBackend) Run(node *dot.Node, prompt string, _ *Context) (BackendRes
 		model = b.Model
 	}
 	text, usage, rounds, conversation, err := agent.RunTaskCapture(context.Background(), b.Client, model, prompt, b.WorkDir)
+	if errors.Is(err, agent.ErrRoundLimitReached) {
+		return BackendResult{
+			Response:     text,
+			Usage:        usage,
+			Model:        model,
+			Rounds:       rounds,
+			Conversation: conversation,
+			Exhausted:    true,
+		}, nil
+	}
 	if err != nil {
 		return BackendResult{}, err
 	}

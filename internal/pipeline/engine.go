@@ -228,6 +228,23 @@ func Run(cfg RunConfig) (RunResult, error) {
 			}, nil
 		}
 
+		// Halt if a failed node would follow an unconditional edge. Conditional
+		// edges (e.g. condition="outcome=fail") are explicit recovery paths and
+		// are allowed to proceed; unconditional edges should not silently carry
+		// failures forward.
+		if outcome.Status == StatusFail && nextEdge.Condition() == "" {
+			slog.Error("pipeline.node.fail.unconditional", "node", current.ID, "next", nextEdge.To)
+			return RunResult{
+				Status:         StatusFail,
+				CompletedNodes: completedNodes,
+				NodeOutcomes:   nodeOutcomes,
+				FailureReason:  fmt.Sprintf("node %q failed; halting (unconditional edge to %q)", current.ID, nextEdge.To),
+				Warnings:       warnings,
+				TotalUsage:     totalUsage,
+				StageUsages:    stageUsages,
+			}, nil
+		}
+
 		slog.Info("pipeline.edge", "from", current.ID, "to", nextEdge.To)
 
 		// Step 7: Handle loop_restart (Phase 1: not implemented, treat as normal edge).
