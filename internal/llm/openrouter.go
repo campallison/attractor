@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 )
 
@@ -331,8 +332,10 @@ func doRequest(ctx context.Context, httpClient *http.Client, baseURL, apiKey str
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		slog.Warn("llm.http.error", "status", resp.StatusCode, "body_bytes", len(body))
 		return nil, classifyHTTPError(openRouterName, resp.StatusCode, body)
 	}
 
+	slog.Debug("llm.http", "req_bytes", len(payload), "resp_bytes", len(body), "status", resp.StatusCode)
 	return body, nil
 }

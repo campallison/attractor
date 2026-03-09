@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -64,6 +65,7 @@ func makeShellExecutor(dockerImage string) ToolExecutor {
 		}
 
 		if reason := isDeniedCommand(args.Command); reason != "" {
+			slog.Warn("tool.shell.denied", "cmd", truncateStr(args.Command, 120), "reason", reason)
 			return "", fmt.Errorf("shell: command blocked: %s", reason)
 		}
 
@@ -119,9 +121,17 @@ func makeShellExecutor(dockerImage string) ToolExecutor {
 			}
 		}
 
+		slog.Info("tool.shell", "cmd", truncateStr(args.Command, 120), "exit", exitCode, "duration_ms", duration.Milliseconds())
 		return fmt.Sprintf("Exit code: %d\nDuration: %dms\n\n%s",
 			exitCode, duration.Milliseconds(), output.String()), nil
 	}
+}
+
+func truncateStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 // filterEnvVars removes environment variables that may contain secrets.

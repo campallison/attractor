@@ -3,6 +3,7 @@ package llm
 import (
 	"bufio"
 	"context"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -78,12 +79,30 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 		return Response{}, err
 	}
 
+	start := time.Now()
 	body, err := doRequest(ctx, c.httpClient, c.baseURL, c.apiKey, orReq)
+	latency := time.Since(start)
+
 	if err != nil {
+		slog.Warn("llm.call.error", "model", req.Model, "latency_ms", latency.Milliseconds(), "error", err)
 		return Response{}, err
 	}
 
-	return parseORResponse(body, req.Model)
+	resp, err := parseORResponse(body, req.Model)
+	if err != nil {
+		slog.Warn("llm.parse.error", "model", req.Model, "error", err)
+		return Response{}, err
+	}
+
+	slog.Info("llm.call",
+		"model", resp.Model,
+		"latency_ms", latency.Milliseconds(),
+		"tokens_in", resp.Usage.InputTokens,
+		"tokens_out", resp.Usage.OutputTokens,
+		"finish", resp.FinishReason.Raw,
+	)
+
+	return resp, nil
 }
 
 // loadDotEnv reads a .env file from the current working directory and sets any

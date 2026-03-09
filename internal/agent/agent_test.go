@@ -123,7 +123,7 @@ func TestRunTaskCapture_ReturnsUsageAndRounds(t *testing.T) {
 		},
 	}
 
-	text, usage, rounds, err := RunTaskCapture(context.Background(), mock, "test-model", "create test.txt", t.TempDir())
+	text, usage, rounds, conversation, err := RunTaskCapture(context.Background(), mock, "test-model", "create test.txt", t.TempDir())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -147,6 +147,9 @@ func TestRunTaskCapture_ReturnsUsageAndRounds(t *testing.T) {
 	if diff := cmp.Diff(45, usage.TotalTokens); diff != "" {
 		t.Errorf("total tokens mismatch (-want +got):\n%s", diff)
 	}
+	if len(conversation) == 0 {
+		t.Error("expected non-empty conversation history")
+	}
 }
 
 func TestRunTaskCapture_TextOnly(t *testing.T) {
@@ -156,7 +159,7 @@ func TestRunTaskCapture_TextOnly(t *testing.T) {
 		},
 	}
 
-	text, usage, rounds, err := RunTaskCapture(context.Background(), mock, "test-model", "answer me", t.TempDir())
+	text, usage, rounds, _, err := RunTaskCapture(context.Background(), mock, "test-model", "answer me", t.TempDir())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

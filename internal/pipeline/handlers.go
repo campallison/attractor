@@ -3,6 +3,7 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,10 +49,11 @@ func (h ConditionalHandler) Execute(node *dot.Node, _ *Context, _ *dot.Graph, _ 
 // BackendResult carries the LLM response and associated token usage from a
 // single codergen stage execution.
 type BackendResult struct {
-	Response string
-	Usage    llm.Usage
-	Model    string
-	Rounds   int
+	Response     string
+	Usage        llm.Usage
+	Model        string
+	Rounds       int
+	Conversation []llm.Message
 }
 
 // CodergenBackend is the interface for LLM execution backends.
@@ -73,6 +75,8 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	}
 	prompt = expandVariables(prompt, g, ctx)
 
+	slog.Info("pipeline.stage.start", "node", node.ID, "prompt_len", len(prompt))
+
 	stageDir := filepath.Join(logsRoot, sanitizeNodeID(node.ID))
 	_ = os.MkdirAll(stageDir, 0o755)
 	_ = os.WriteFile(filepath.Join(stageDir, "prompt.md"), []byte(prompt), 0o644)
@@ -82,6 +86,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	if h.Backend != nil {
 		result, err := h.Backend.Run(node, prompt, ctx)
 		if err != nil {
+			slog.Warn("pipeline.stage.fail", "node", node.ID, "error", err)
 			outcome := Outcome{
 				Status:        StatusFail,
 				FailureReason: err.Error(),
@@ -100,11 +105,18 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 		if usageData, err := json.MarshalIndent(stageUsage, "", "  "); err == nil {
 			_ = os.WriteFile(filepath.Join(stageDir, "usage.json"), usageData, 0o644)
 		}
+		if len(result.Conversation) > 0 {
+			if convData, err := json.MarshalIndent(result.Conversation, "", "  "); err == nil {
+				_ = os.WriteFile(filepath.Join(stageDir, "conversation.json"), convData, 0o644)
+				slog.Info("pipeline.conversation.saved", "node", node.ID, "messages", len(result.Conversation))
+			}
+		}
 	} else {
 		responseText = "[simulated] response for stage: " + node.ID
 	}
 
 	_ = os.WriteFile(filepath.Join(stageDir, "response.md"), []byte(responseText), 0o644)
+	slog.Info("pipeline.stage.done", "node", node.ID, "response_len", len(responseText))
 
 	outcome := Outcome{
 		Status: StatusSuccess,

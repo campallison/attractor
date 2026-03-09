@@ -20,6 +20,7 @@ import (
 
 	"github.com/campallison/attractor/internal/dot"
 	"github.com/campallison/attractor/internal/llm"
+	"github.com/campallison/attractor/internal/logging"
 	"github.com/campallison/attractor/internal/pipeline"
 	"github.com/campallison/attractor/internal/tools"
 )
@@ -78,7 +79,15 @@ func main() {
 	if err := os.MkdirAll(logsRoot, 0o755); err != nil {
 		log.Fatalf("Failed to create logs directory: %v", err)
 	}
+
+	logFilePath := filepath.Join(logsRoot, "pipeline.log")
+	if err := logging.Setup(logFilePath); err != nil {
+		log.Fatalf("Failed to set up logging: %v", err)
+	}
+	defer logging.Teardown()
+
 	fmt.Printf("    Logs: %s\n", logsRoot)
+	fmt.Printf("    Log file: %s\n", logFilePath)
 	fmt.Printf("    Work dir: %s\n", *workDir)
 	fmt.Printf("    Model: %s\n", *model)
 	if *budgetTokens > 0 {

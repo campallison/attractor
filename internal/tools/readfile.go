@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,6 +59,7 @@ func executeReadFile(rawArgs json.RawMessage, workDir string) (string, error) {
 
 	path, err := resolvePath(args.FilePath, workDir)
 	if err != nil {
+		slog.Warn("tool.read.denied", "path", args.FilePath, "error", err)
 		return "", fmt.Errorf("read_file: %w", err)
 	}
 
@@ -111,6 +113,7 @@ func executeReadFile(rawArgs json.RawMessage, workDir string) (string, error) {
 		fmt.Fprintf(&buf, "%*d | %s\n", width, i+1, lines[i])
 	}
 
+	slog.Info("tool.read", "path", args.FilePath, "bytes", info.Size(), "lines_from", offset, "lines_to", endIdx)
 	return buf.String(), nil
 }
 

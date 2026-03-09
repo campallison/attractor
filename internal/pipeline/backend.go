@@ -21,14 +21,15 @@ func (b AgentBackend) Run(node *dot.Node, prompt string, _ *Context) (BackendRes
 	if model == "" {
 		model = b.Model
 	}
-	text, usage, rounds, err := agent.RunTaskCapture(context.Background(), b.Client, model, prompt, b.WorkDir)
+	text, usage, rounds, conversation, err := agent.RunTaskCapture(context.Background(), b.Client, model, prompt, b.WorkDir)
 	if err != nil {
 		return BackendResult{}, err
 	}
 	return BackendResult{
-		Response: text,
-		Usage:    usage,
-		Model:    model,
-		Rounds:   rounds,
+		Response:     text,
+		Usage:        usage,
+		Model:        model,
+		Rounds:       rounds,
+		Conversation: conversation,
 	}, nil
 }

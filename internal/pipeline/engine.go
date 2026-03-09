@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
 	"math/rand"
 	"os"
@@ -65,9 +66,14 @@ func Run(cfg RunConfig) (RunResult, error) {
 	}
 	iterations := 0
 
+	// Track budget threshold crossings (50%, 75%) to warn once each.
+	budgetWarned50 := false
+	budgetWarned75 := false
+
 	for {
 		iterations++
 		if iterations > maxIter {
+			slog.Error("pipeline.max_iterations", "iterations", maxIter)
 			return RunResult{
 				Status:         StatusFail,
 				CompletedNodes: completedNodes,
@@ -81,16 +87,19 @@ func Run(cfg RunConfig) (RunResult, error) {
 
 		// Step 1: Check for terminal node.
 		if isTerminal(current) {
+			slog.Info("pipeline.terminal", "node", current.ID)
 			gateOK, failedGate := checkGoalGates(g, nodeOutcomes)
 			if !gateOK && failedGate != nil {
 				retryTarget := getRetryTarget(failedGate, g)
 				if retryTarget != "" {
+					slog.Warn("pipeline.goal_gate.retry", "gate", failedGate.ID, "retry_target", retryTarget)
 					current = g.NodeByID(retryTarget)
 					if current == nil {
 						return RunResult{}, fmt.Errorf("retry target %q not found", retryTarget)
 					}
 					continue
 				}
+				slog.Error("pipeline.goal_gate.fail", "gate", failedGate.ID)
 				return RunResult{
 					Status:         StatusFail,
 					CompletedNodes: completedNodes,
@@ -101,6 +110,7 @@ func Run(cfg RunConfig) (RunResult, error) {
 					StageUsages:    stageUsages,
 				}, nil
 			}
+			slog.Info("pipeline.success", "completed_nodes", len(completedNodes), "total_tokens", totalUsage.TotalTokens)
 			return RunResult{
 				Status:         StatusSuccess,
 				CompletedNodes: completedNodes,
@@ -112,9 +122,15 @@ func Run(cfg RunConfig) (RunResult, error) {
 		}
 
 		// Step 2: Execute node handler with retry policy.
+		nodeModel := current.Model()
+		slog.Info("pipeline.node.start", "node", current.ID, "model", nodeModel)
+		nodeStart := time.Now()
+
 		ctx.Set("current_node", current.ID)
 		handler := registry.Resolve(current)
 		outcome := executeWithRetry(handler, current, ctx, g, logsRoot, nodeRetries)
+
+		nodeDuration := time.Since(nodeStart)
 
 		// Step 3: Record completion.
 		completedNodes = append(completedNodes, current.ID)
@@ -128,7 +144,35 @@ func Run(cfg RunConfig) (RunResult, error) {
 			totalUsage.Rounds += outcome.Usage.Rounds
 		}
 
+		logAttrs := []any{
+			"node", current.ID,
+			"outcome", string(outcome.Status),
+			"duration", nodeDuration.Round(time.Second).String(),
+		}
+		if outcome.Usage != nil {
+			logAttrs = append(logAttrs, "rounds", outcome.Usage.Rounds, "tokens", outcome.Usage.TotalTokens)
+		}
+		if outcome.Status.IsSuccess() {
+			slog.Info("pipeline.node.done", logAttrs...)
+		} else {
+			logAttrs = append(logAttrs, "failure_reason", outcome.FailureReason)
+			slog.Warn("pipeline.node.done", logAttrs...)
+		}
+
+		// Budget threshold warnings.
+		if cfg.MaxBudgetTokens > 0 {
+			pct := float64(totalUsage.TotalTokens) / float64(cfg.MaxBudgetTokens) * 100
+			if pct >= 75 && !budgetWarned75 {
+				slog.Warn("pipeline.budget", "used", totalUsage.TotalTokens, "max", cfg.MaxBudgetTokens, "pct", int(pct))
+				budgetWarned75 = true
+			} else if pct >= 50 && !budgetWarned50 {
+				slog.Warn("pipeline.budget", "used", totalUsage.TotalTokens, "max", cfg.MaxBudgetTokens, "pct", int(pct))
+				budgetWarned50 = true
+			}
+		}
+
 		if cfg.MaxBudgetTokens > 0 && totalUsage.TotalTokens > cfg.MaxBudgetTokens {
+			slog.Error("pipeline.budget.exceeded", "used", totalUsage.TotalTokens, "max", cfg.MaxBudgetTokens)
 			return RunResult{
 				Status:         StatusFail,
 				CompletedNodes: completedNodes,
@@ -152,13 +196,17 @@ func Run(cfg RunConfig) (RunResult, error) {
 		cp := NewCheckpoint(current.ID, completedNodes, nodeRetries, ctx)
 		cpPath := filepath.Join(logsRoot, "checkpoint.json")
 		if err := cp.Save(cpPath); err != nil {
+			slog.Warn("pipeline.checkpoint.fail", "error", err)
 			warnings = append(warnings, fmt.Sprintf("checkpoint save failed: %v", err))
+		} else {
+			slog.Info("pipeline.checkpoint", "node", current.ID, "completed", len(completedNodes))
 		}
 
 		// Step 6: Select next edge.
 		nextEdge := SelectEdge(current.ID, outcome, ctx, g)
 		if nextEdge == nil {
 			if outcome.Status == StatusFail {
+				slog.Error("pipeline.node.fail.terminal", "node", current.ID)
 				return RunResult{
 					Status:         StatusFail,
 					CompletedNodes: completedNodes,
@@ -169,7 +217,7 @@ func Run(cfg RunConfig) (RunResult, error) {
 					StageUsages:    stageUsages,
 				}, nil
 			}
-			// No more edges -- pipeline complete.
+			slog.Info("pipeline.complete", "node", current.ID)
 			return RunResult{
 				Status:         StatusSuccess,
 				CompletedNodes: completedNodes,
@@ -179,6 +227,8 @@ func Run(cfg RunConfig) (RunResult, error) {
 				StageUsages:    stageUsages,
 			}, nil
 		}
+
+		slog.Info("pipeline.edge", "from", current.ID, "to", nextEdge.To)
 
 		// Step 7: Handle loop_restart (Phase 1: not implemented, treat as normal edge).
 
@@ -336,6 +386,9 @@ func executeWithRetry(h Handler, node *dot.Node, ctx *Context, g *dot.Graph, log
 	maxAttempts := maxRetries + 1
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			slog.Warn("pipeline.retry", "node", node.ID, "attempt", attempt, "max_attempts", maxAttempts)
+		}
 		outcome := h.Execute(node, ctx, g, logsRoot)
 
 		if outcome.Status.IsSuccess() {
@@ -346,6 +399,7 @@ func executeWithRetry(h Handler, node *dot.Node, ctx *Context, g *dot.Graph, log
 		if outcome.Status == StatusRetry && attempt < maxAttempts {
 			nodeRetries[node.ID] = attempt
 			delay := backoffDelay(attempt)
+			slog.Warn("pipeline.retry.backoff", "node", node.ID, "attempt", attempt, "delay", delay.String())
 			time.Sleep(delay)
 			continue
 		}
@@ -354,6 +408,7 @@ func executeWithRetry(h Handler, node *dot.Node, ctx *Context, g *dot.Graph, log
 			if attempt < maxAttempts {
 				nodeRetries[node.ID] = attempt
 				delay := backoffDelay(attempt)
+				slog.Warn("pipeline.retry.backoff", "node", node.ID, "attempt", attempt, "delay", delay.String(), "reason", outcome.FailureReason)
 				time.Sleep(delay)
 				continue
 			}

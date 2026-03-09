@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -59,5 +60,6 @@ func executeWriteFile(rawArgs json.RawMessage, workDir string) (string, error) {
 		return "", fmt.Errorf("write_file: %w", err)
 	}
 
+	slog.Info("tool.write", "path", args.FilePath, "bytes", len(args.Content))
 	return fmt.Sprintf("Wrote %d bytes to %s", len(args.Content), args.FilePath), nil
 }

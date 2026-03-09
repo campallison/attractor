@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/campallison/attractor/internal/llm"
 )
@@ -32,6 +33,8 @@ func compressHistory(conversation []llm.Message, keepFullRounds int) []llm.Messa
 	if totalRounds <= keepFullRounds {
 		return conversation
 	}
+
+	slog.Debug("agent.compress", "total_rounds", totalRounds, "keep_full", keepFullRounds, "compressing", totalRounds-keepFullRounds, "messages_before", len(conversation))
 
 	// Build a map of tool call IDs that should be compressed, along with
 	// a human-readable summary derived from the tool name and arguments.

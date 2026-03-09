@@ -1,6 +1,9 @@
 package pipeline
 
-import "strings"
+import (
+	"log/slog"
+	"strings"
+)
 
 // EvaluateCondition evaluates a condition expression string against the
 // current outcome and context. The condition language supports:
@@ -21,9 +24,11 @@ func EvaluateCondition(condition string, outcome Outcome, ctx *Context) bool {
 			continue
 		}
 		if !evaluateClause(clause, outcome, ctx) {
+			slog.Debug("pipeline.condition", "expr", condition, "result", false)
 			return false
 		}
 	}
+	slog.Debug("pipeline.condition", "expr", condition, "result", true)
 	return true
 }
 

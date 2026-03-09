@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/campallison/attractor/internal/llm"
 	"github.com/campallison/attractor/internal/tools"
@@ -35,6 +36,7 @@ func RunTask(ctx context.Context, client Completer, model, prompt, workDir strin
 	var totalUsage llm.Usage
 
 	for round := 0; round < maxRounds; round++ {
+		slog.Info("agent.round", "round", round+1, "max", maxRounds)
 		compressed := compressHistory(conversation, defaultKeepFullRounds)
 		resp, err := client.Complete(ctx, llm.Request{
 			Model:    model,
@@ -47,24 +49,24 @@ func RunTask(ctx context.Context, client Completer, model, prompt, workDir strin
 
 		totalUsage = totalUsage.Add(resp.Usage)
 
-		// Print any assistant text.
 		if text := resp.Text(); text != "" {
 			fmt.Printf("[assistant] %s\n", text)
+			slog.Debug("agent.assistant", "text", summarize(text, 200))
 		}
 
 		toolCalls := resp.ToolCalls()
 		if len(toolCalls) == 0 {
+			slog.Info("agent.complete", "rounds", round+1, "tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens)
 			fmt.Printf("[done] Total usage: in=%d out=%d total=%d\n",
 				totalUsage.InputTokens, totalUsage.OutputTokens, totalUsage.TotalTokens)
 			return nil
 		}
 
-		// Append the assistant's message (with tool calls) to the conversation.
 		conversation = append(conversation, resp.Message)
 
-		// Execute each tool call and append results.
 		for _, tc := range toolCalls {
 			result := executeTool(registry, tc, workDir)
+			slog.Info("agent.tool", "tool", tc.Name, "result_bytes", len(result.Content), "is_error", result.IsError)
 			fmt.Printf("[tool] %s -> %s\n", tc.Name, summarize(result.Content, 120))
 			conversation = append(conversation, llm.ToolResultMessage(
 				result.ToolCallID,
@@ -74,6 +76,7 @@ func RunTask(ctx context.Context, client Completer, model, prompt, workDir strin
 		}
 	}
 
+	slog.Warn("agent.round_limit", "rounds", maxRounds, "tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens)
 	fmt.Printf("[warning] Round limit (%d) reached. Stopping.\n", maxRounds)
 	return nil
 }
@@ -112,7 +115,7 @@ func executeTool(registry *tools.Registry, tc llm.ToolCall, workDir string) llm.
 // returns the final assistant text response instead of printing it. Used by
 // the pipeline engine's codergen handler. It also returns accumulated token
 // usage and the number of LLM rounds executed.
-func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDir string) (string, llm.Usage, int, error) {
+func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDir string) (string, llm.Usage, int, []llm.Message, error) {
 	registry := tools.DefaultRegistry("attractor-sandbox")
 	systemPrompt := BuildSystemPrompt(workDir)
 
@@ -126,6 +129,7 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 	var totalUsage llm.Usage
 
 	for round := 0; round < maxRounds; round++ {
+		slog.Info("agent.round", "round", round+1, "max", maxRounds)
 		compressed := compressHistory(conversation, defaultKeepFullRounds)
 		resp, err := client.Complete(ctx, llm.Request{
 			Model:    model,
@@ -133,24 +137,27 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 			Tools:    toolDefs,
 		})
 		if err != nil {
-			return "", totalUsage, round, fmt.Errorf("agent: LLM call failed on round %d: %w", round, err)
+			return "", totalUsage, round, conversation, fmt.Errorf("agent: LLM call failed on round %d: %w", round, err)
 		}
 
 		totalUsage = totalUsage.Add(resp.Usage)
 
 		if text := resp.Text(); text != "" {
 			lastText = text
+			slog.Debug("agent.assistant", "text", summarize(text, 200))
 		}
 
 		toolCalls := resp.ToolCalls()
 		if len(toolCalls) == 0 {
-			return lastText, totalUsage, round + 1, nil
+			slog.Info("agent.complete", "rounds", round+1, "tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens)
+			return lastText, totalUsage, round + 1, conversation, nil
 		}
 
 		conversation = append(conversation, resp.Message)
 
 		for _, tc := range toolCalls {
 			result := executeTool(registry, tc, workDir)
+			slog.Info("agent.tool", "tool", tc.Name, "result_bytes", len(result.Content), "is_error", result.IsError)
 			conversation = append(conversation, llm.ToolResultMessage(
 				result.ToolCallID,
 				result.Content,
@@ -159,10 +166,11 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 		}
 	}
 
+	slog.Warn("agent.round_limit", "rounds", maxRounds, "tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens)
 	if lastText != "" {
-		return lastText, totalUsage, maxRounds, nil
+		return lastText, totalUsage, maxRounds, conversation, nil
 	}
-	return "", totalUsage, maxRounds, fmt.Errorf("agent: round limit (%d) reached with no final response", maxRounds)
+	return "", totalUsage, maxRounds, conversation, fmt.Errorf("agent: round limit (%d) reached with no final response", maxRounds)
 }
 
 // summarize returns the first n characters of s, appending "..." if truncated.

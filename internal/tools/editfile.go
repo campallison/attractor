@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -74,10 +75,12 @@ func executeEditFile(rawArgs json.RawMessage, workDir string) (string, error) {
 	count := strings.Count(content, args.OldString)
 
 	if count == 0 {
+		slog.Warn("tool.edit.fail", "path", args.FilePath, "reason", "old_string not found")
 		return "", fmt.Errorf("edit_file: old_string not found in %s", args.FilePath)
 	}
 
 	if !args.ReplaceAll && count > 1 {
+		slog.Warn("tool.edit.fail", "path", args.FilePath, "reason", "not unique", "occurrences", count)
 		return "", fmt.Errorf("edit_file: old_string is not unique in %s (%d occurrences). Provide more context or set replace_all=true", args.FilePath, count)
 	}
 
@@ -93,7 +96,9 @@ func executeEditFile(rawArgs json.RawMessage, workDir string) (string, error) {
 	}
 
 	if args.ReplaceAll {
+		slog.Info("tool.edit", "path", args.FilePath, "replacements", count)
 		return fmt.Sprintf("Replaced %d occurrences in %s", count, args.FilePath), nil
 	}
+	slog.Info("tool.edit", "path", args.FilePath, "replacements", 1)
 	return fmt.Sprintf("Replaced 1 occurrence in %s", args.FilePath), nil
 }
