@@ -3,9 +3,9 @@
 // It parses the DOT pipeline file, validates it, and runs it with a real LLM
 // backend to build the RetroQuest Returns application end-to-end.
 //
-// Usage: go run ./cmd/run-retroquest [-budget TOKENS] [-pipeline FILE] [-docker-image IMAGE]
+// Usage: go run ./cmd/run-retroquest [-budget TOKENS] [-pipeline FILE] [-docker-image IMAGE] [-simulate]
 //
-// Requires OPENROUTER_API_KEY in .env or environment.
+// Requires OPENROUTER_API_KEY in .env or environment (not needed with -simulate).
 package main
 
 import (
@@ -40,6 +40,7 @@ func main() {
 	model := flag.String("model", defaultModel, "default LLM model")
 	dockerImage := flag.String("docker-image", defaultDockerImage, "Docker image for shell sandbox")
 	noDocker := flag.Bool("no-docker", false, "skip Docker container setup (shell commands will fail)")
+	simulate := flag.Bool("simulate", false, "use SimulatedBackend instead of real LLM (no API key or Docker needed)")
 	flag.Parse()
 
 	loadEnv()
@@ -96,35 +97,42 @@ func main() {
 		fmt.Println("    Budget: unlimited")
 	}
 
-	// 3b. Start Docker sandbox
-	if *noDocker {
-		fmt.Println("    Docker: DISABLED (shell commands will fail)")
+	var registry *pipeline.HandlerRegistry
+
+	if *simulate {
+		fmt.Println("    Mode: SIMULATED (no LLM calls, no Docker)")
+		registry = pipeline.DefaultHandlerRegistry(pipeline.SimulatedBackend{})
 	} else {
-		fmt.Printf("    Docker: starting container with image %s...\n", *dockerImage)
-		if err := tools.EnsureContainer(*dockerImage, *workDir); err != nil {
-			log.Fatalf("Failed to start Docker sandbox: %v", err)
-		}
-		defer func() {
-			fmt.Println("Stopping Docker sandbox...")
-			if err := tools.StopContainer(); err != nil {
-				fmt.Printf("Warning: failed to stop container: %v\n", err)
+		// 3b. Start Docker sandbox
+		if *noDocker {
+			fmt.Println("    Docker: DISABLED (shell commands will fail)")
+		} else {
+			fmt.Printf("    Docker: starting container with image %s...\n", *dockerImage)
+			if err := tools.EnsureContainer(*dockerImage, *workDir); err != nil {
+				log.Fatalf("Failed to start Docker sandbox: %v", err)
 			}
-		}()
-		fmt.Println("    Docker: container running")
-	}
+			defer func() {
+				fmt.Println("Stopping Docker sandbox...")
+				if err := tools.StopContainer(); err != nil {
+					fmt.Printf("Warning: failed to stop container: %v\n", err)
+				}
+			}()
+			fmt.Println("    Docker: container running")
+		}
 
-	client, err := llm.NewClientFromEnv()
-	if err != nil {
-		log.Fatalf("LLM client error: %v", err)
-	}
+		client, err := llm.NewClientFromEnv()
+		if err != nil {
+			log.Fatalf("LLM client error: %v", err)
+		}
 
-	backend := pipeline.AgentBackend{
-		Client:  client,
-		Model:   *model,
-		WorkDir: *workDir,
-	}
+		backend := pipeline.AgentBackend{
+			Client:  client,
+			Model:   *model,
+			WorkDir: *workDir,
+		}
 
-	registry := pipeline.DefaultHandlerRegistry(backend)
+		registry = pipeline.DefaultHandlerRegistry(backend)
+	}
 
 	// 4. Run pipeline
 	fmt.Println("[4] Running pipeline...")
