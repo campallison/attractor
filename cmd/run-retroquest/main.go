@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/campallison/attractor/internal/dot"
@@ -24,11 +25,11 @@ import (
 )
 
 const (
-	defaultModel       = "anthropic/claude-opus-4.6"
-	defaultPipeline    = "pipelines/retroquest-returns.dot"
-	defaultWorkDir     = "/Users/allison/workspace/retroquest-returns"
-	defaultBudgetTokens = 5_000_000 // ~$25-75 safety cap depending on input/output ratio
-	defaultDockerImage = "golang:1.23"
+	defaultModel        = "anthropic/claude-opus-4.6"
+	defaultPipeline     = "pipelines/retroquest-returns-v2.dot"
+	defaultWorkDir      = "/Users/allison/workspace/retroquest-returns-v2"
+	defaultBudgetTokens = 10_000_000 // safety net; actual usage should be well below with compression + model tiering
+	defaultDockerImage  = "golang:1.23"
 )
 
 func main() {
@@ -209,9 +210,12 @@ func loadEnv() {
 	}
 	for _, line := range splitLines(string(data)) {
 		if idx := indexOf(line, '='); idx > 0 {
-			key := line[:idx]
-			val := line[idx+1:]
-			os.Setenv(key, val)
+			key := strings.TrimSpace(line[:idx])
+			val := strings.TrimSpace(line[idx+1:])
+			val = strings.Trim(val, `"'`)
+			if key != "" {
+				os.Setenv(key, val)
+			}
 		}
 	}
 }

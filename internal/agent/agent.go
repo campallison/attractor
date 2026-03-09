@@ -35,9 +35,10 @@ func RunTask(ctx context.Context, client Completer, model, prompt, workDir strin
 	var totalUsage llm.Usage
 
 	for round := 0; round < maxRounds; round++ {
+		compressed := compressHistory(conversation, defaultKeepFullRounds)
 		resp, err := client.Complete(ctx, llm.Request{
 			Model:    model,
-			Messages: conversation,
+			Messages: compressed,
 			Tools:    toolDefs,
 		})
 		if err != nil {
@@ -125,9 +126,10 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 	var totalUsage llm.Usage
 
 	for round := 0; round < maxRounds; round++ {
+		compressed := compressHistory(conversation, defaultKeepFullRounds)
 		resp, err := client.Complete(ctx, llm.Request{
 			Model:    model,
-			Messages: conversation,
+			Messages: compressed,
 			Tools:    toolDefs,
 		})
 		if err != nil {
