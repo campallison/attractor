@@ -15,6 +15,7 @@ type Client struct {
 	apiKey     string
 	baseURL    string
 	httpClient *http.Client
+	zdr        bool // enforce Zero Data Retention routing
 }
 
 // ClientOption is a functional option for configuring a Client.
@@ -31,6 +32,15 @@ func WithBaseURL(url string) ClientOption {
 func WithHTTPClient(hc *http.Client) ClientOption {
 	return func(c *Client) {
 		c.httpClient = hc
+	}
+}
+
+// WithZDR enables Zero Data Retention enforcement. When set, every request
+// includes provider preferences that restrict routing to ZDR-compliant
+// endpoints on OpenRouter.
+func WithZDR() ClientOption {
+	return func(c *Client) {
+		c.zdr = true
 	}
 }
 
@@ -74,7 +84,7 @@ func NewClient(apiKey string, opts ...ClientOption) (*Client, error) {
 // Complete sends a blocking chat completion request and returns the full response.
 // The context controls cancellation and deadline.
 func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
-	orReq, err := buildORRequest(req)
+	orReq, err := buildORRequest(req, c.zdr)
 	if err != nil {
 		return Response{}, err
 	}

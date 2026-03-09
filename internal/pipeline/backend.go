@@ -12,15 +12,19 @@ import (
 // loop (agent.RunTaskCapture). Each codergen node invocation runs a full
 // agentic loop with tool execution.
 type AgentBackend struct {
-	Client  agent.Completer
-	Model   string
-	WorkDir string
+	Client        agent.Completer
+	Model         string
+	ModelOverride string // when non-empty, used for ALL stages regardless of node/default model
+	WorkDir       string
 }
 
 func (b AgentBackend) Run(node *dot.Node, prompt string, _ *Context) (BackendResult, error) {
-	model := node.Model()
+	model := b.ModelOverride
 	if model == "" {
-		model = b.Model
+		model = node.Model()
+		if model == "" {
+			model = b.Model
+		}
 	}
 	text, usage, rounds, conversation, err := agent.RunTaskCapture(context.Background(), b.Client, model, prompt, b.WorkDir)
 	if errors.Is(err, agent.ErrRoundLimitReached) {

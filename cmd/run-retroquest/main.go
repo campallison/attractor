@@ -42,6 +42,8 @@ func main() {
 	budgetTokens := flag.Int("budget", defaultBudgetTokens, "max total tokens before stopping (0 = no limit)")
 	workDir := flag.String("workdir", defaultWorkDir, "working directory for the agent")
 	model := flag.String("model", defaultModel, "default LLM model")
+	modelOverride := flag.String("model-override", "", "override ALL stage models with this model (useful for cheap test runs)")
+	zdr := flag.Bool("zdr", false, "enforce Zero Data Retention routing on OpenRouter")
 	dockerImage := flag.String("docker-image", defaultDockerImage, "Docker image for shell sandbox")
 	noDocker := flag.Bool("no-docker", false, "skip Docker container setup (shell commands will fail)")
 	simulate := flag.Bool("simulate", false, "use SimulatedBackend instead of real LLM (no API key or Docker needed)")
@@ -79,7 +81,7 @@ func main() {
 
 	// 3. Pre-flight checks
 	fmt.Println("[3] Pre-flight checks...")
-	pfResult := runPreflight(g, *workDir, *model, *budgetTokens, *simulate, *noDocker)
+	pfResult := runPreflight(g, *workDir, *model, *modelOverride, *budgetTokens, *simulate, *noDocker)
 	for _, w := range pfResult.warnings {
 		fmt.Printf("    (warning: %s)\n", w)
 	}
@@ -105,7 +107,14 @@ func main() {
 	fmt.Printf("    Logs: %s\n", logsRoot)
 	fmt.Printf("    Log file: %s\n", logFilePath)
 	fmt.Printf("    Work dir: %s\n", *workDir)
-	fmt.Printf("    Model: %s\n", *model)
+	if *modelOverride != "" {
+		fmt.Printf("    Model override: %s (all stages)\n", *modelOverride)
+	} else {
+		fmt.Printf("    Model: %s\n", *model)
+	}
+	if *zdr {
+		fmt.Println("    ZDR: enabled (Zero Data Retention)")
+	}
 	if *budgetTokens > 0 {
 		fmt.Printf("    Budget: %d tokens\n", *budgetTokens)
 	} else {
@@ -135,15 +144,20 @@ func main() {
 			fmt.Println("    Docker: container running")
 		}
 
-		client, err := llm.NewClientFromEnv()
+		var clientOpts []llm.ClientOption
+		if *zdr {
+			clientOpts = append(clientOpts, llm.WithZDR())
+		}
+		client, err := llm.NewClientFromEnv(clientOpts...)
 		if err != nil {
 			log.Fatalf("LLM client error: %v", err)
 		}
 
 		backend := pipeline.AgentBackend{
-			Client:  client,
-			Model:   *model,
-			WorkDir: *workDir,
+			Client:        client,
+			Model:         *model,
+			ModelOverride: *modelOverride,
+			WorkDir:       *workDir,
 		}
 
 		registry = pipeline.DefaultHandlerRegistry(backend)
@@ -204,6 +218,10 @@ func main() {
 
 	// 8. Write summary JSON
 	summaryPath := filepath.Join(logsRoot, "summary.json")
+	effectiveModel := *model
+	if *modelOverride != "" {
+		effectiveModel = *modelOverride
+	}
 	summaryData := map[string]any{
 		"status":          string(result.Status),
 		"completed_nodes": result.CompletedNodes,
@@ -212,7 +230,9 @@ func main() {
 		"total_usage":     result.TotalUsage,
 		"stage_usages":    result.StageUsages,
 		"elapsed_seconds": elapsed.Seconds(),
-		"model":           *model,
+		"model":           effectiveModel,
+		"model_override":  *modelOverride != "",
+		"zdr":             *zdr,
 		"budget_tokens":   *budgetTokens,
 	}
 	if data, err := json.MarshalIndent(summaryData, "", "  "); err == nil {
@@ -285,7 +305,7 @@ type preflightResult struct {
 	err      error
 }
 
-func runPreflight(g *dot.Graph, workDir, model string, budgetTokens int, simulate, noDocker bool) preflightResult {
+func runPreflight(g *dot.Graph, workDir, model, modelOverride string, budgetTokens int, simulate, noDocker bool) preflightResult {
 	var warnings []string
 	var failures []string
 
@@ -346,7 +366,12 @@ func runPreflight(g *dot.Graph, workDir, model string, budgetTokens int, simulat
 	if simulate {
 		fmt.Printf("    [--] Model validation (skipped: simulate mode)\n")
 	} else {
-		allModels := collectModelIDs(g, model)
+		var allModels []string
+		if modelOverride != "" {
+			allModels = []string{modelOverride}
+		} else {
+			allModels = collectModelIDs(g, model)
+		}
 		knownModels, apiErr := fetchOpenRouterModels()
 		if apiErr != nil {
 			// API unreachable -- fall back to format check.

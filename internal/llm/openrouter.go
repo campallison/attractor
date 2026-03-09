@@ -54,14 +54,21 @@ type orFunction struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
+// orProviderPreferences controls provider routing behaviour on OpenRouter.
+type orProviderPreferences struct {
+	ZDR            bool   `json:"zdr,omitempty"`
+	DataCollection string `json:"data_collection,omitempty"` // "allow" or "deny"
+}
+
 // orRequest is the full request body sent to the OpenRouter chat completions endpoint.
 type orRequest struct {
-	Model      string      `json:"model"`
-	Messages   []orMessage `json:"messages"`
-	Tools      []orTool    `json:"tools,omitempty"`
-	ToolChoice interface{} `json:"tool_choice,omitempty"` // string or object
-	MaxTokens  int         `json:"max_tokens,omitempty"`
-	Temperature *float64   `json:"temperature,omitempty"`
+	Model      string                 `json:"model"`
+	Messages   []orMessage            `json:"messages"`
+	Tools      []orTool               `json:"tools,omitempty"`
+	ToolChoice interface{}            `json:"tool_choice,omitempty"` // string or object
+	MaxTokens  int                    `json:"max_tokens,omitempty"`
+	Temperature *float64              `json:"temperature,omitempty"`
+	Provider   *orProviderPreferences `json:"provider,omitempty"`
 }
 
 // orResponse is the response body from the OpenRouter chat completions endpoint.
@@ -82,7 +89,9 @@ type orResponse struct {
 // --- Request translation ---
 
 // buildORRequest converts a unified Request into the OpenRouter wire format.
-func buildORRequest(req Request) (orRequest, error) {
+// When zdr is true, the request includes provider preferences that enforce
+// Zero Data Retention routing on OpenRouter.
+func buildORRequest(req Request, zdr bool) (orRequest, error) {
 	messages, err := translateMessages(req.Messages)
 	if err != nil {
 		return orRequest{}, err
@@ -98,6 +107,10 @@ func buildORRequest(req Request) (orRequest, error) {
 	if len(req.Tools) > 0 {
 		orReq.Tools = translateTools(req.Tools)
 		orReq.ToolChoice = translateToolChoice(req.ToolChoice)
+	}
+
+	if zdr {
+		orReq.Provider = &orProviderPreferences{ZDR: true, DataCollection: "deny"}
 	}
 
 	return orReq, nil
