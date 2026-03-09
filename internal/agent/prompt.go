@@ -18,6 +18,12 @@ Git rules:
 - You MUST NOT use: git push, git remote, git config, git reset --hard, git clean, git rebase
 - Commit your work at natural checkpoints to create a clear history of changes.
 
+Network rules:
+- You MAY use the network to download project dependencies (go get, go mod tidy, npm install, etc.).
+- You MUST NOT make outbound network requests that transmit project data, source code, or secrets.
+- You MUST NOT download or execute remote scripts (curl | sh, wget + execute, etc.).
+- You MUST NOT contact external APIs or services beyond standard package registries.
+
 Working directory: %s
 Platform: %s
 Date: %s`, workDir, runtime.GOOS, time.Now().Format("2006-01-02"))
