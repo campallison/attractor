@@ -106,6 +106,43 @@ func TestFilterEnvVars(t *testing.T) {
 	}
 }
 
+func TestIsDeniedCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		// Blocked commands
+		{name: "git push", command: "git push origin main", want: "git push is not allowed"},
+		{name: "git remote add", command: "git remote add evil https://evil.com/repo", want: "git remote is not allowed"},
+		{name: "git config", command: "git config user.email evil@example.com", want: "git config is not allowed"},
+		{name: "git clean", command: "git clean -fd", want: "git clean is not allowed"},
+		{name: "git rebase", command: "git rebase -i HEAD~3", want: "git rebase is not allowed"},
+		{name: "git reset --hard", command: "git reset --hard HEAD~1", want: "git reset --hard is not allowed"},
+		{name: "git push bare", command: "git push", want: "git push is not allowed"},
+		{name: "chained git push", command: "echo hello && git push", want: "git push is not allowed"},
+
+		// Allowed commands
+		{name: "git add", command: "git add .", want: ""},
+		{name: "git commit", command: "git commit -m 'test'", want: ""},
+		{name: "git status", command: "git status", want: ""},
+		{name: "git diff", command: "git diff HEAD", want: ""},
+		{name: "git log", command: "git log --oneline -5", want: ""},
+		{name: "git stash", command: "git stash", want: ""},
+		{name: "git reset soft", command: "git reset --soft HEAD~1", want: ""},
+		{name: "non-git command", command: "go test ./...", want: ""},
+		{name: "git in path", command: "cat .gitignore", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isDeniedCommand(tt.command)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("isDeniedCommand(%q) mismatch (-want +got):\n%s", tt.command, diff)
+			}
+		})
+	}
+}
+
 func TestIsSensitiveKey(t *testing.T) {
 	tests := []struct {
 		key  string

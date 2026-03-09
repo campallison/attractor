@@ -63,6 +63,10 @@ func makeShellExecutor(dockerImage string) ToolExecutor {
 			return "", fmt.Errorf("invalid shell arguments: %w", err)
 		}
 
+		if reason := isDeniedCommand(args.Command); reason != "" {
+			return "", fmt.Errorf("shell: command blocked: %s", reason)
+		}
+
 		timeoutMs := args.TimeoutMs
 		if timeoutMs <= 0 {
 			timeoutMs = defaultTimeoutMs
@@ -148,6 +152,46 @@ func isSensitiveKey(key string) bool {
 	}
 	for _, s := range suffixes {
 		if strings.HasSuffix(upper, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// deniedGitSubcommands lists git subcommands that agents must not execute.
+// Safe commands (add, commit, status, diff, log, stash) are allowed.
+var deniedGitSubcommands = []string{
+	"push", "remote", "config", "clean", "rebase",
+}
+
+// isDeniedCommand checks whether a shell command contains a blocked operation.
+// Returns a human-readable reason if denied, or empty string if allowed.
+func isDeniedCommand(command string) string {
+	tokens := strings.Fields(command)
+	for i, tok := range tokens {
+		if tok != "git" {
+			continue
+		}
+		if i+1 >= len(tokens) {
+			continue
+		}
+		sub := tokens[i+1]
+		for _, denied := range deniedGitSubcommands {
+			if sub == denied {
+				return fmt.Sprintf("git %s is not allowed", denied)
+			}
+		}
+		if sub == "reset" && containsFlag(tokens[i+2:], "--hard") {
+			return "git reset --hard is not allowed"
+		}
+	}
+	return ""
+}
+
+// containsFlag checks if a flag appears in a slice of command tokens.
+func containsFlag(tokens []string, flag string) bool {
+	for _, t := range tokens {
+		if t == flag {
 			return true
 		}
 	}

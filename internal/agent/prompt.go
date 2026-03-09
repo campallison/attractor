@@ -13,6 +13,11 @@ func BuildSystemPrompt(workDir string) string {
 
 When creating or modifying files, use the write_file tool to create new files and the edit_file tool to modify existing files. Use read_file to inspect files before editing them.
 
+Git rules:
+- You MAY use: git add, git commit, git status, git diff, git log, git stash
+- You MUST NOT use: git push, git remote, git config, git reset --hard, git clean, git rebase
+- Commit your work at natural checkpoints to create a clear history of changes.
+
 Working directory: %s
 Platform: %s
 Date: %s`, workDir, runtime.GOOS, time.Now().Format("2006-01-02"))
