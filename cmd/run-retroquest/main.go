@@ -3,7 +3,7 @@
 // It parses the DOT pipeline file, validates it, and runs it with a real LLM
 // backend to build the RetroQuest Returns application end-to-end.
 //
-// Usage: go run ./cmd/run-retroquest [-budget TOKENS] [-pipeline FILE]
+// Usage: go run ./cmd/run-retroquest [-budget TOKENS] [-pipeline FILE] [-docker-image IMAGE]
 //
 // Requires OPENROUTER_API_KEY in .env or environment.
 package main
@@ -20,13 +20,15 @@ import (
 	"github.com/campallison/attractor/internal/dot"
 	"github.com/campallison/attractor/internal/llm"
 	"github.com/campallison/attractor/internal/pipeline"
+	"github.com/campallison/attractor/internal/tools"
 )
 
 const (
-	defaultModel        = "anthropic/claude-opus-4.6"
-	defaultPipeline     = "pipelines/retroquest-returns.dot"
-	defaultWorkDir      = "/Users/allison/workspace/retroquest-returns"
+	defaultModel       = "anthropic/claude-opus-4.6"
+	defaultPipeline    = "pipelines/retroquest-returns.dot"
+	defaultWorkDir     = "/Users/allison/workspace/retroquest-returns"
 	defaultBudgetTokens = 5_000_000 // ~$25-75 safety cap depending on input/output ratio
+	defaultDockerImage = "golang:1.23"
 )
 
 func main() {
@@ -34,6 +36,8 @@ func main() {
 	budgetTokens := flag.Int("budget", defaultBudgetTokens, "max total tokens before stopping (0 = no limit)")
 	workDir := flag.String("workdir", defaultWorkDir, "working directory for the agent")
 	model := flag.String("model", defaultModel, "default LLM model")
+	dockerImage := flag.String("docker-image", defaultDockerImage, "Docker image for shell sandbox")
+	noDocker := flag.Bool("no-docker", false, "skip Docker container setup (shell commands will fail)")
 	flag.Parse()
 
 	loadEnv()
@@ -80,6 +84,23 @@ func main() {
 		fmt.Printf("    Budget: %d tokens\n", *budgetTokens)
 	} else {
 		fmt.Println("    Budget: unlimited")
+	}
+
+	// 3b. Start Docker sandbox
+	if *noDocker {
+		fmt.Println("    Docker: DISABLED (shell commands will fail)")
+	} else {
+		fmt.Printf("    Docker: starting container with image %s...\n", *dockerImage)
+		if err := tools.EnsureContainer(*dockerImage, *workDir); err != nil {
+			log.Fatalf("Failed to start Docker sandbox: %v", err)
+		}
+		defer func() {
+			fmt.Println("Stopping Docker sandbox...")
+			if err := tools.StopContainer(); err != nil {
+				fmt.Printf("Warning: failed to stop container: %v\n", err)
+			}
+		}()
+		fmt.Println("    Docker: container running")
 	}
 
 	client, err := llm.NewClientFromEnv()
