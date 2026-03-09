@@ -66,6 +66,10 @@ func Validate(g *dot.Graph) []Diagnostic {
 	diags = append(diags, checkGoalGateHasRetry(g)...)
 	diags = append(diags, checkPromptOnLLMNodes(g)...)
 	diags = append(diags, checkMaxRetries(g)...)
+	diags = append(diags, checkNoFailRecovery(g)...)
+	diags = append(diags, checkLinearNoConditions(g)...)
+	diags = append(diags, checkExitReachable(g)...)
+	diags = append(diags, checkRetryPathToGate(g)...)
 	return diags
 }
 
@@ -392,6 +396,138 @@ func checkMaxRetries(g *dot.Graph) []Diagnostic {
 				Message:  fmt.Sprintf("max_retries=%d exceeds cap (%d); will be clamped at runtime", mr, maxRetriesTolerance),
 				NodeID:   n.ID,
 				Fix:      fmt.Sprintf("set max_retries to %d or lower", maxRetriesTolerance),
+			})
+		}
+	}
+	return diags
+}
+
+// resolveHandlerType returns the effective handler type for a node, checking
+// the explicit type attribute first, then falling back to the shape mapping.
+func resolveHandlerType(n *dot.Node) string {
+	if t := n.Type(); t != "" {
+		return t
+	}
+	return shapeToHandlerType[n.Shape()]
+}
+
+func checkNoFailRecovery(g *dot.Graph) []Diagnostic {
+	var diags []Diagnostic
+	for _, n := range g.Nodes {
+		ht := resolveHandlerType(n)
+		if ht != "codergen" {
+			continue
+		}
+		outgoing := g.OutgoingEdges(n.ID)
+		if len(outgoing) == 0 {
+			continue
+		}
+		hasConditional := false
+		for _, e := range outgoing {
+			if e.Condition() != "" {
+				hasConditional = true
+				break
+			}
+		}
+		if !hasConditional {
+			diags = append(diags, Diagnostic{
+				Rule:     "no_fail_recovery",
+				Severity: SeverityWarning,
+				Message:  "codergen node has no conditional outgoing edges; any failure will halt the pipeline",
+				NodeID:   n.ID,
+				Fix:      `add a conditional edge (e.g. condition="outcome=fail") to a recovery node, or accept that failure will halt the pipeline`,
+			})
+		}
+	}
+	return diags
+}
+
+func checkLinearNoConditions(g *dot.Graph) []Diagnostic {
+	for _, e := range g.Edges {
+		if e.Condition() != "" {
+			return nil
+		}
+	}
+	return []Diagnostic{{
+		Rule:     "linear_no_conditions",
+		Severity: SeverityInfo,
+		Message:  "pipeline has no conditional edges; any stage failure will halt execution",
+		Fix:      `add conditional edges (e.g. condition="outcome=fail") to enable recovery paths`,
+	}}
+}
+
+func checkExitReachable(g *dot.Graph) []Diagnostic {
+	exit := g.FindExitNode()
+	if exit == nil {
+		return nil
+	}
+	canReachExit := make(map[string]bool)
+	var walk func(id string)
+	walk = func(id string) {
+		if canReachExit[id] {
+			return
+		}
+		canReachExit[id] = true
+		for _, e := range g.IncomingEdges(id) {
+			walk(e.From)
+		}
+	}
+	walk(exit.ID)
+
+	var diags []Diagnostic
+	for _, n := range g.Nodes {
+		if n.Shape() == "Msquare" {
+			continue
+		}
+		if !canReachExit[n.ID] {
+			diags = append(diags, Diagnostic{
+				Rule:     "exit_reachable",
+				Severity: SeverityWarning,
+				Message:  fmt.Sprintf("node %q has no path to the exit node", n.ID),
+				NodeID:   n.ID,
+				Fix:      "add an edge path from this node to the exit node",
+			})
+		}
+	}
+	return diags
+}
+
+func checkRetryPathToGate(g *dot.Graph) []Diagnostic {
+	var diags []Diagnostic
+	for _, n := range g.Nodes {
+		if !n.GoalGate() {
+			continue
+		}
+		rt := n.RetryTarget()
+		if rt == "" {
+			rt = n.FallbackRetryTarget()
+		}
+		if rt == "" {
+			continue
+		}
+		if g.NodeByID(rt) == nil {
+			continue
+		}
+		reachable := make(map[string]bool)
+		var walk func(id string)
+		walk = func(id string) {
+			if reachable[id] {
+				return
+			}
+			reachable[id] = true
+			for _, e := range g.OutgoingEdges(id) {
+				walk(e.To)
+			}
+		}
+		walk(rt)
+
+		if !reachable[n.ID] {
+			diags = append(diags, Diagnostic{
+				Rule:     "retry_path_to_gate",
+				Severity: SeverityWarning,
+				Message:  fmt.Sprintf("retry_target %q has no path back to goal_gate %q; retries will never re-evaluate the gate", rt, n.ID),
+				NodeID:   n.ID,
+				Fix:      fmt.Sprintf("add an edge path from %q to %q", rt, n.ID),
 			})
 		}
 	}
