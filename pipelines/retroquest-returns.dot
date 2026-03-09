@@ -22,9 +22,9 @@ Study these areas of the old codebase:
 Based on your analysis, write a file called FEATURE_SPEC.md that defines the Tier 1 feature set for the new application:
 
 - Team management: create team (name + password), login with team name + password, no individual user accounts
-- Retro board: 3 default columns (Happy, Sad, Action Items) created when a team is created
-- Thoughts: create, edit, delete thoughts in Happy and Sad columns. Unlimited voting (increment a counter, no per-user tracking). Mark as discussed.
-- Action items: create, edit, delete. Fields: task text, assignee (free text), completed (boolean). Display in the Action Items column.
+- Retro board: 3 default thought columns (Happy, Confused, Sad) created when a team is created
+- Thoughts: create, edit, delete thoughts in Happy, Confused, and Sad columns. Unlimited voting (increment a counter, no per-user tracking). Mark as discussed.
+- Action items: create, edit, delete. Fields: task text, assignee (free text), completed (boolean). Displayed in a separate Action Items section alongside the thought columns.
 - End retro / archive: archive the current board (thoughts become read-only historical records), action items carry forward unless completed
 - Real-time: all connected clients see changes immediately via Server-Sent Events (SSE)
 - Responsive layout: works on desktop and mobile
@@ -95,7 +95,7 @@ Write a file called DESIGN.md that covers ALL of the following sections:
    templates/base.html -- layout with head (Tailwind CDN, htmx CDN), nav, content block
    templates/login.html -- login form
    templates/create.html -- create team form
-   templates/retro.html -- main retro board with 3 columns
+   templates/retro.html -- main retro board with 3 thought columns + action items section
    templates/partials/thought.html -- single thought card (for htmx swap)
    templates/partials/thought_form.html -- thought input form
    templates/partials/action_item.html -- single action item row
@@ -186,7 +186,7 @@ Then implement ALL of the following, replacing stubs with working code:
    - Use a JWT_SECRET or COOKIE_SECRET from environment
 
 3. HANDLERS (internal/handlers/)
-   - team.go: CreateTeam (POST, hash password with bcrypt, create team + default board + 3 columns), Login (POST, verify password, set cookie), LoginPage (GET, render template), CreateTeamPage (GET, render template)
+   - team.go: CreateTeam (POST, hash password with bcrypt, create team + default board + 3 default columns: Happy, Confused, Sad), Login (POST, verify password, set cookie), LoginPage (GET, render template), CreateTeamPage (GET, render template)
    - thought.go: CreateThought (POST, insert + notify), UpdateThought (PUT), DeleteThought (DELETE), HeartThought (POST, increment + notify), DiscussThought (POST, toggle + notify). Return htmx partials.
    - action_item.go: CreateActionItem (POST + notify), UpdateActionItem (PUT + notify), DeleteActionItem (DELETE + notify), ToggleCompleted (POST + notify). Return htmx partials.
    - board.go: RetroPage (GET, render full board), EndRetro (POST, archive board + create new one + notify), ArchivesPage (GET, render archives)
@@ -243,10 +243,10 @@ Then implement ALL templates with htmx and Tailwind CSS:
 
 4. templates/retro.html -- Main retro board (the core page):
    - Connect to SSE endpoint using hx-ext='sse' and sse-connect='/team/{teamId}/events'
-   - 3-column layout (responsive: side-by-side on desktop, stacked on mobile)
+   - 4-section layout (responsive: side-by-side on desktop, stacked on mobile): Happy, Confused, Sad thought columns + Action Items section
    - Each column header shows column title
-   - Happy and Sad columns: list of thought cards + input form at top
-   - Action Items column: list of action items + input form at top
+   - Happy, Confused, and Sad columns: list of thought cards + input form at top
+   - Action Items section: list of action items + input form at top
    - End Retro button in header area
    - Use sse-swap for real-time updates targeting specific element IDs
 
