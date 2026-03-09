@@ -123,10 +123,31 @@ func isBinary(data []byte) bool {
 	return bytes.ContainsRune(data[:checkLen], 0)
 }
 
+// sensitiveFileNames lists filenames that tools must never read, write, or
+// edit. Matched against the base name of the resolved path (case-insensitive).
+var sensitiveFileNames = []string{
+	".env",
+	".env.local",
+	".env.production",
+	".env.staging",
+}
+
+// isSensitiveFile returns true if the base filename matches the deny-list.
+func isSensitiveFile(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	for _, name := range sensitiveFileNames {
+		if base == name {
+			return true
+		}
+	}
+	return false
+}
+
 // resolvePath resolves a relative path against workDir and enforces that the
 // result stays inside workDir. Absolute paths are rejected outright. Symlinks
 // are resolved via filepath.EvalSymlinks and containment is re-checked on the
-// real path to prevent symlink-based escapes.
+// real path to prevent symlink-based escapes. Files matching the sensitive
+// filename deny-list (e.g. .env) are rejected to prevent secret leakage.
 func resolvePath(path, workDir string) (string, error) {
 	if filepath.IsAbs(path) {
 		return "", fmt.Errorf("absolute paths are not allowed: %s", path)
@@ -134,6 +155,10 @@ func resolvePath(path, workDir string) (string, error) {
 	joined := filepath.Join(workDir, path)
 	cleaned := filepath.Clean(joined)
 	cleanedRoot := filepath.Clean(workDir)
+
+	if isSensitiveFile(cleaned) {
+		return "", fmt.Errorf("access denied: %s is a sensitive file", filepath.Base(cleaned))
+	}
 	if cleaned != cleanedRoot &&
 		!strings.HasPrefix(cleaned, cleanedRoot+string(filepath.Separator)) {
 		return "", fmt.Errorf("path escapes working directory: %s", path)

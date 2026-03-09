@@ -234,6 +234,42 @@ func TestResolvePath_SymlinkInsideWorkDir(t *testing.T) {
 	}
 }
 
+func TestResolvePath_SensitiveFileDenied(t *testing.T) {
+	workDir := t.TempDir()
+
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{name: ".env denied", path: ".env", wantErr: true},
+		{name: ".env.local denied", path: ".env.local", wantErr: true},
+		{name: ".env.production denied", path: ".env.production", wantErr: true},
+		{name: ".env.staging denied", path: ".env.staging", wantErr: true},
+		{name: "nested .env denied", path: "config/.env", wantErr: true},
+		{name: ".env.example allowed", path: ".env.example", wantErr: false},
+		{name: "env.txt allowed", path: "env.txt", wantErr: false},
+		{name: "myfile.env allowed", path: "myfile.env", wantErr: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := resolvePath(tt.path, workDir)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), "sensitive file") {
+					t.Errorf("error %q does not contain %q", err.Error(), "sensitive file")
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestResolvePath_NonexistentFileAllowed(t *testing.T) {
 	workDir := t.TempDir()
 
@@ -274,6 +310,33 @@ func TestExecuteReadFileOffsetLimit(t *testing.T) {
 		if strings.Contains(got, nw) {
 			t.Errorf("output unexpectedly contains %q", nw)
 		}
+	}
+}
+
+func TestExecuteReadFile_SensitiveFileDenied(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, ".env", "SECRET_KEY=hunter2\n")
+
+	rawArgs, _ := json.Marshal(readFileArgs{FilePath: ".env"})
+	_, err := executeReadFile(rawArgs, dir)
+	if err == nil {
+		t.Fatal("expected error reading .env, got nil")
+	}
+	if !strings.Contains(err.Error(), "sensitive file") {
+		t.Errorf("error %q does not contain %q", err.Error(), "sensitive file")
+	}
+}
+
+func TestExecuteWriteFile_SensitiveFileDenied(t *testing.T) {
+	dir := t.TempDir()
+
+	rawArgs, _ := json.Marshal(writeFileArgs{FilePath: ".env", Content: "SECRET=bad\n"})
+	_, err := executeWriteFile(rawArgs, dir)
+	if err == nil {
+		t.Fatal("expected error writing .env, got nil")
+	}
+	if !strings.Contains(err.Error(), "sensitive file") {
+		t.Errorf("error %q does not contain %q", err.Error(), "sensitive file")
 	}
 }
 
