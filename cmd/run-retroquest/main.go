@@ -9,11 +9,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -73,8 +77,19 @@ func main() {
 	}
 	fmt.Println("    Validation passed.")
 
-	// 3. Set up execution
-	fmt.Println("[3] Setting up execution...")
+	// 3. Pre-flight checks
+	fmt.Println("[3] Pre-flight checks...")
+	pfResult := runPreflight(g, *workDir, *model, *budgetTokens, *simulate, *noDocker)
+	for _, w := range pfResult.warnings {
+		fmt.Printf("    (warning: %s)\n", w)
+	}
+	if pfResult.err != nil {
+		log.Fatalf("Pre-flight failed: %v", pfResult.err)
+	}
+	fmt.Println("    Pre-flight passed.")
+
+	// 4. Set up execution
+	fmt.Println("[4] Setting up execution...")
 
 	logsRoot := filepath.Join(*workDir, ".attractor-logs", time.Now().Format("2006-01-02_15-04-05"))
 	if err := os.MkdirAll(logsRoot, 0o755); err != nil {
@@ -134,8 +149,8 @@ func main() {
 		registry = pipeline.DefaultHandlerRegistry(backend)
 	}
 
-	// 4. Run pipeline
-	fmt.Println("[4] Running pipeline...")
+	// 5. Run pipeline
+	fmt.Println("[5] Running pipeline...")
 	fmt.Println()
 	startTime := time.Now()
 
@@ -151,7 +166,7 @@ func main() {
 		log.Fatalf("Pipeline execution error: %v", err)
 	}
 
-	// 5. Report results
+	// 6. Report results
 	fmt.Println()
 	fmt.Println("=== Pipeline Results ===")
 	fmt.Printf("Status: %s\n", result.Status)
@@ -169,7 +184,7 @@ func main() {
 		}
 	}
 
-	// 6. Token usage summary
+	// 7. Token usage summary
 	fmt.Println()
 	fmt.Println("=== Token Usage ===")
 	fmt.Printf("Total: %d tokens (input: %d, output: %d)\n",
@@ -187,7 +202,7 @@ func main() {
 		}
 	}
 
-	// 7. Write summary JSON
+	// 8. Write summary JSON
 	summaryPath := filepath.Join(logsRoot, "summary.json")
 	summaryData := map[string]any{
 		"status":          string(result.Status),
@@ -263,4 +278,191 @@ func indexOf(s string, c byte) int {
 		}
 	}
 	return -1
+}
+
+type preflightResult struct {
+	warnings []string
+	err      error
+}
+
+func runPreflight(g *dot.Graph, workDir, model string, budgetTokens int, simulate, noDocker bool) preflightResult {
+	var warnings []string
+	var failures []string
+
+	// 1. Work directory exists and is writable.
+	info, err := os.Stat(workDir)
+	if err != nil {
+		fmt.Printf("    [FAIL] Work directory: %s does not exist\n", workDir)
+		failures = append(failures, fmt.Sprintf("work directory %q does not exist", workDir))
+	} else if !info.IsDir() {
+		fmt.Printf("    [FAIL] Work directory: %s is not a directory\n", workDir)
+		failures = append(failures, fmt.Sprintf("%q is not a directory", workDir))
+	} else {
+		tmp := filepath.Join(workDir, ".attractor-preflight-check")
+		if err := os.WriteFile(tmp, []byte("ok"), 0o644); err != nil {
+			fmt.Printf("    [FAIL] Work directory: %s is not writable\n", workDir)
+			failures = append(failures, fmt.Sprintf("work directory %q is not writable: %v", workDir, err))
+		} else {
+			_ = os.Remove(tmp)
+			fmt.Printf("    [ok] Work directory exists and is writable\n")
+		}
+	}
+
+	// 2. API key is present and well-formed.
+	if simulate {
+		fmt.Printf("    [--] API key (skipped: simulate mode)\n")
+	} else {
+		apiKey := os.Getenv("OPENROUTER_API_KEY")
+		if apiKey == "" {
+			fmt.Printf("    [FAIL] API key: OPENROUTER_API_KEY is not set\n")
+			failures = append(failures, "OPENROUTER_API_KEY environment variable is not set")
+		} else if !strings.HasPrefix(apiKey, "sk-or-") {
+			fmt.Printf("    [FAIL] API key: does not start with sk-or- (got %q...)\n", truncate(apiKey, 10))
+			failures = append(failures, "OPENROUTER_API_KEY does not start with \"sk-or-\" -- check for stray quotes or wrong key")
+		} else {
+			fmt.Printf("    [ok] API key present and well-formed\n")
+		}
+	}
+
+	// 3. Docker daemon is reachable.
+	if simulate || noDocker {
+		reason := "simulate mode"
+		if noDocker {
+			reason = "--no-docker"
+		}
+		fmt.Printf("    [--] Docker daemon (skipped: %s)\n", reason)
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := exec.CommandContext(ctx, "docker", "info").Run(); err != nil {
+			fmt.Printf("    [FAIL] Docker daemon is not reachable\n")
+			failures = append(failures, "Docker daemon is not reachable -- is Docker Desktop running?")
+		} else {
+			fmt.Printf("    [ok] Docker daemon is reachable\n")
+		}
+	}
+
+	// 4. Model IDs exist on OpenRouter (falls back to format check if API unreachable).
+	if simulate {
+		fmt.Printf("    [--] Model validation (skipped: simulate mode)\n")
+	} else {
+		allModels := collectModelIDs(g, model)
+		knownModels, apiErr := fetchOpenRouterModels()
+		if apiErr != nil {
+			// API unreachable -- fall back to format check.
+			var badFormat []string
+			for _, m := range allModels {
+				if !strings.Contains(m, "/") {
+					badFormat = append(badFormat, m)
+				}
+			}
+			if len(badFormat) > 0 {
+				fmt.Printf("    [FAIL] Model IDs: invalid format (missing provider/ prefix): %s\n", strings.Join(badFormat, ", "))
+				failures = append(failures, fmt.Sprintf("model IDs missing provider/ prefix: %s", strings.Join(badFormat, ", ")))
+			} else {
+				w := fmt.Sprintf("Could not reach OpenRouter to validate models (%v); format check passed", apiErr)
+				fmt.Printf("    [!!] %s\n", w)
+				warnings = append(warnings, w)
+			}
+		} else {
+			var unknown []string
+			for _, m := range allModels {
+				if !knownModels[m] {
+					unknown = append(unknown, m)
+				}
+			}
+			if len(unknown) > 0 {
+				fmt.Printf("    [FAIL] Model IDs not found on OpenRouter: %s\n", strings.Join(unknown, ", "))
+				failures = append(failures, fmt.Sprintf("model IDs not found on OpenRouter: %s", strings.Join(unknown, ", ")))
+			} else {
+				fmt.Printf("    [ok] All %d model IDs verified on OpenRouter\n", len(allModels))
+			}
+		}
+	}
+
+	// 5. Budget sanity check (warnings only).
+	codergenCount := 0
+	for _, n := range g.Nodes {
+		if n.Shape() == "box" || n.Type() == "codergen" {
+			codergenCount++
+		}
+	}
+	if budgetTokens > 0 && budgetTokens < 100_000 && codergenCount > 1 {
+		w := fmt.Sprintf("Budget is very low (%d tokens) for a %d-stage pipeline; stages may be cut short", budgetTokens, codergenCount)
+		fmt.Printf("    [!!] %s\n", w)
+		warnings = append(warnings, w)
+	} else if budgetTokens > 20_000_000 {
+		w := fmt.Sprintf("Budget is very high (%d tokens); consider lowering for safety", budgetTokens)
+		fmt.Printf("    [!!] %s\n", w)
+		warnings = append(warnings, w)
+	} else {
+		fmt.Printf("    [ok] Budget is reasonable\n")
+	}
+
+	if len(failures) > 0 {
+		return preflightResult{
+			warnings: warnings,
+			err:      fmt.Errorf("pre-flight failed:\n    - %s", strings.Join(failures, "\n    - ")),
+		}
+	}
+	return preflightResult{warnings: warnings}
+}
+
+func collectModelIDs(g *dot.Graph, defaultModel string) []string {
+	seen := make(map[string]bool)
+	seen[defaultModel] = true
+	for _, n := range g.Nodes {
+		if m := n.Model(); m != "" {
+			seen[m] = true
+		}
+	}
+	models := make([]string, 0, len(seen))
+	for m := range seen {
+		models = append(models, m)
+	}
+	return models
+}
+
+func fetchOpenRouterModels() (map[string]bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://openrouter.ai/api/v1/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	apiKey := os.Getenv("OPENROUTER_API_KEY")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("reading response: %w", err)
+	}
+
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parsing response: %w", err)
+	}
+
+	models := make(map[string]bool, len(result.Data))
+	for _, m := range result.Data {
+		models[m.ID] = true
+	}
+	return models, nil
 }
