@@ -1,0 +1,577 @@
+digraph RetroQuestReturns {
+	graph [
+		goal="Build RetroQuest Returns: a modern retrospective board web app using Go (stdlib), htmx + Tailwind CSS, and PostgreSQL. Tier 1 features: team create/login, 3 default thought columns (Happy, Confused, Sad), thoughts CRUD with unlimited voting, action items CRUD with completion and assignee, end retro/archive, SSE real-time updates, responsive layout."
+	]
+	rankdir=LR
+
+	start [shape=Mdiamond, label="Start"]
+	exit  [shape=Msquare, label="Exit"]
+
+	analyze [
+		shape=box,
+		label="Analyze Old Codebase",
+		model="anthropic/claude-opus-4.6",
+		max_retries=1,
+		prompt="You are analyzing a deprecated web application called RetroQuest to produce a feature specification for its replacement. The old codebase is at deprecated-retroquest/retroquest/ in your working directory.
+
+Study these areas of the old codebase:
+1. Backend API structure: read files in deprecated-retroquest/retroquest/api/src/main/java/com/ford/labs/retroquest/ -- look at the controller, service, and entity classes for: team, board, column, thought, actionitem
+2. Frontend structure: read deprecated-retroquest/retroquest/ui/src/App/Team/Retro/ for the retro board components, and ui/src/App/ for page structure
+3. Database schema: read deprecated-retroquest/retroquest/api/src/main/resources/db/changelog.xml for table definitions
+
+Based on your analysis, write a file called FEATURE_SPEC.md that defines the Tier 1 feature set for the new application:
+
+- Team management: create team (name + password), login with team name + password, no individual user accounts
+- Retro board: 3 default thought columns (Happy, Confused, Sad) created when a team is created. Action Items is a separate section, not a thought column.
+- Thoughts: create, edit, delete thoughts in Happy, Confused, and Sad columns. Unlimited voting (increment a counter, no per-user tracking). Mark as discussed.
+- Action items: create, edit, delete. Fields: task text, assignee (free text), completed (boolean). Displayed in a separate Action Items section alongside the thought columns.
+- End retro / archive: archive the current board (thoughts become read-only historical records), action items carry forward unless completed
+- Real-time: all connected clients see changes immediately via Server-Sent Events (SSE)
+- Responsive layout: works on desktop and mobile
+
+For each feature, document: what it does, the user interaction flow, and any important business rules from the old code. Keep it concise and actionable -- this document will be the input to the design stage.
+
+Tech stack for the new version (do NOT implement yet, just note in the spec):
+- Backend: Go, standard library only (net/http), no frameworks
+- Frontend: HTML templates rendered server-side, htmx for dynamic interactions, Tailwind CSS for styling
+- Database: PostgreSQL via pgx driver
+- Real-time: SSE + Postgres LISTEN/NOTIFY
+- Architecture: monolith (single Go binary)"
+	]
+
+	design [
+		shape=box,
+		label="Design Architecture",
+		model="anthropic/claude-opus-4.6",
+		max_retries=1,
+		check_cmd="go build ./...",
+		prompt="You are designing the architecture for RetroQuest Returns. Read FEATURE_SPEC.md for the complete feature specification.
+
+Your job is to produce TWO things:
+A) A DESIGN.md prose blueprint
+B) Go contract files that define the exact interfaces and types all implementation stages must use
+
+The Go contract files are the source of truth. Every downstream stage will implement these interfaces and use these exact types. The compiler will enforce consistency.
+
+=== PART A: DESIGN.md ===
+
+Write a file called DESIGN.md covering:
+
+1. PROJECT STRUCTURE: the Go project layout (cmd/server/, internal/server/, internal/models/, internal/db/, internal/handlers/, internal/sse/, internal/auth/, internal/tmpl/, templates/, static/, migrations/)
+
+2. DATABASE SCHEMA: every table with columns, types, constraints, indexes. Tables: teams (TEXT PK from slug), columns (UUID PK), boards (UUID PK), thoughts (UUID PK), action_items (UUID PK). Use ON DELETE CASCADE. Board_id on thoughts is nullable (NULL=active, non-null=archived).
+
+3. HTTP API ROUTES: every route with method, path, handler, description. Use Go 1.22+ ServeMux patterns. Include: login, create team, logout, board view, thought CRUD+heart+discuss, action item CRUD+complete+assignee, column title update, end retro, archives, SSE events.
+
+4. TEMPLATE STRUCTURE: all HTML templates and what they render (base.html, login.html, create.html, board.html, column.html, thought_card.html, action_items.html, action_item_card.html, archives.html, archived_board.html).
+
+5. SSE EVENT DESIGN: per-column events (column-{id}-update), action item events, end-retro page reload. Postgres LISTEN/NOTIFY on 'retro_events' channel.
+
+6. AUTHENTICATION: HMAC-SHA256 signed cookies, bcrypt passwords, RequireAuth middleware.
+
+=== PART B: Go Contract Files ===
+
+Create these Go files. They MUST compile together (go build ./... must pass). Use panic(\"not implemented\") for function bodies.
+
+1. go.mod -- module github.com/campallison/retroquest-returns, Go 1.22+, require github.com/jackc/pgx/v5 and golang.org/x/crypto
+
+2. internal/models/models.go -- ALL domain struct types with exact field names, Go types, and json tags:
+   - Team: ID (string), Name (string), Password (string, json:\"-\"), FailedAttempts (int), DateCreated (time.Time), LastLoginDate (*time.Time)
+   - Column: ID (string), TeamID (string), Topic (string), Title (string)
+   - Board: ID (string), TeamID (string), DateCreated (time.Time)
+   - Thought: ID (string), TeamID (string), ColumnID (string), BoardID (*string), Message (string), Hearts (int), Discussed (bool), DateCreated (time.Time)
+   - ActionItem: ID (string), TeamID (string), Task (string), Assignee (*string), Completed (bool), Archived (bool), DateCreated (time.Time)
+
+3. internal/db/repository.go -- a Repository interface with EVERY query method:
+   type Repository interface {
+       CreateTeam(ctx context.Context, team models.Team) (models.Team, error)
+       GetTeamByID(ctx context.Context, id string) (models.Team, error)
+       GetTeamByName(ctx context.Context, name string) (models.Team, error)
+       UpdateLastLogin(ctx context.Context, teamID string) error
+       CreateDefaultColumns(ctx context.Context, teamID string) ([]models.Column, error)
+       GetColumnsByTeam(ctx context.Context, teamID string) ([]models.Column, error)
+       GetColumnByID(ctx context.Context, id string) (models.Column, error)
+       UpdateColumnTitle(ctx context.Context, id, title string) error
+       CreateBoard(ctx context.Context, teamID string) (models.Board, error)
+       GetArchivedBoards(ctx context.Context, teamID string) ([]models.Board, error)
+       CreateThought(ctx context.Context, thought models.Thought) (models.Thought, error)
+       GetActiveThoughtsByColumn(ctx context.Context, columnID string) ([]models.Thought, error)
+       GetThoughtsByBoard(ctx context.Context, boardID string) ([]models.Thought, error)
+       UpdateThoughtMessage(ctx context.Context, id, message string) error
+       DeleteThought(ctx context.Context, id string) error
+       IncrementHearts(ctx context.Context, id string) (int, error)
+       ToggleDiscussed(ctx context.Context, id string) (bool, error)
+       CreateActionItem(ctx context.Context, item models.ActionItem) (models.ActionItem, error)
+       GetActiveActionItems(ctx context.Context, teamID string) ([]models.ActionItem, error)
+       UpdateActionItem(ctx context.Context, id, task string) error
+       UpdateAssignee(ctx context.Context, id string, assignee *string) error
+       DeleteActionItem(ctx context.Context, id string) error
+       ToggleCompleted(ctx context.Context, id string) (bool, error)
+       EndRetro(ctx context.Context, teamID string) (models.Board, error)
+       Notify(ctx context.Context, channel, payload string) error
+   }
+
+4. internal/auth/auth.go -- exported function and type signatures with panic stubs:
+   - func HashPassword(password string) (string, error)
+   - func CheckPassword(password, hash string) bool
+   - func SetSessionCookie(w http.ResponseWriter, teamID string)
+   - func ClearSessionCookie(w http.ResponseWriter)
+   - func GetTeamIDFromRequest(r *http.Request) (string, error)
+   - func RequireAuth(next http.Handler) http.Handler
+   - func ValidateTeamName(name string) error
+   - func ValidatePassword(password string) error
+   - func TeamNameToSlug(name string) string
+
+5. internal/sse/hub.go -- Hub struct with method signatures (panic stubs):
+   - type Event struct { Type string; Data string }
+   - type Hub struct { ... fields for client tracking with sync.RWMutex ... }
+   - func NewHub() *Hub
+   - func (h *Hub) Subscribe(teamID string) (<-chan Event, func())  // returns channel and unsubscribe func
+   - func (h *Hub) Broadcast(teamID string, event Event)
+   - func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request, teamID string)
+
+6. internal/tmpl/renderer.go -- Renderer interface:
+   - type Renderer interface {
+         Render(w io.Writer, page string, data any) error
+         RenderFragment(w io.Writer, fragment string, data any) error
+         RenderFragmentToString(fragment string, data any) (string, error)
+     }
+
+After creating all files, run 'go mod tidy' via the shell tool to resolve dependencies. Then run 'go build ./...' to verify everything compiles.
+
+CRITICAL: The contract files MUST compile. If go build fails, fix the errors before finishing. These files are the foundation that all subsequent stages depend on."
+	]
+
+	scaffold [
+		shape=box,
+		label="Scaffold Project",
+		model="anthropic/claude-sonnet-4.6",
+		max_retries=1,
+		check_cmd="go build ./...",
+		prompt="You are setting up the project skeleton for RetroQuest Returns. Read DESIGN.md for the architecture.
+
+IMPORTANT: The design stage has already created contract files: go.mod, internal/models/models.go, internal/db/repository.go, internal/auth/auth.go, internal/sse/hub.go, and internal/tmpl/renderer.go. Read all of them first. Do NOT overwrite or modify these files. Your job is to create the REMAINING skeleton around them.
+
+Create these files and directories:
+
+1. cmd/server/main.go -- main entry point stub that imports the packages and has a minimal main() that compiles
+2. internal/server/server.go -- NewServer function stub that takes a db.Repository, *sse.Hub, and tmpl.Renderer
+3. internal/db/db.go -- database connection helper (pgx pool)
+4. internal/db/migrate.go -- migration runner (reads .sql files from migrations/ in sorted order, executes each in a transaction)
+5. internal/handlers/ -- create handler files with stub functions for each route group:
+   - team.go, thought.go, action_item.go, board.go, sse.go
+   - Each handler struct should hold a db.Repository, *sse.Hub, and tmpl.Renderer
+   - All handler methods should be stubs that return http.StatusNotImplemented
+6. templates/base.html -- base layout with Tailwind CSS CDN and htmx CDN in head, basic nav
+7. static/.gitkeep
+8. migrations/001_create_tables.sql -- full schema DDL from DESIGN.md
+9. docker-compose.yml -- Postgres service (postgres:16, port 5432, retroquest db)
+10. .env.example with DATABASE_URL and PORT
+
+After creating all files, run 'go mod tidy' then 'go build ./...' to verify everything compiles.
+
+SCOPE: Do NOT implement business logic. Do NOT modify the contract files from the design stage. All handler methods should be stubs. The purpose is a compiling skeleton."
+	]
+
+	db_layer [
+		shape=box,
+		label="Implement DB Layer",
+		model="anthropic/claude-sonnet-4.6",
+		max_retries=1,
+		check_cmd="go test ./internal/db/...",
+		prompt="You are implementing the database layer for RetroQuest Returns using test-driven development.
+
+IMPORTANT: The design stage created contract files that define the exact interfaces you must implement. Read these FIRST:
+- internal/db/repository.go (the Repository interface -- you MUST implement every method)
+- internal/models/models.go (domain types -- do NOT modify)
+- DESIGN.md (for schema and architecture)
+
+Then read the scaffold code:
+- internal/db/db.go
+- internal/db/migrate.go
+- migrations/001_create_tables.sql
+
+=== TDD PROCESS ===
+
+Follow a test-driven development cycle for each Repository method:
+
+1. WRITE THE TEST FIRST in internal/db/postgres_test.go. Since the Docker sandbox does not have a running PostgreSQL, guard all DB tests with:
+   func TestMain(m *testing.M) {
+       if os.Getenv(\"DATABASE_URL\") == \"\" {
+           fmt.Println(\"skipping DB tests: DATABASE_URL not set\")
+           os.Exit(0)
+       }
+       os.Exit(m.Run())
+   }
+   This ensures 'go test ./internal/db/...' passes in the sandbox (skipped = success).
+
+2. Write the test for a method (e.g., TestCreateTeam), using table-driven tests and github.com/google/go-cmp/cmp for assertions. Run 'go get github.com/google/go-cmp/cmp' first.
+
+3. Implement the method in internal/db/postgres.go to satisfy the test.
+
+4. Run 'go test ./internal/db/...' to confirm it compiles and the test is skipped (no DATABASE_URL).
+
+5. Move to the next method. Repeat the cycle.
+
+=== IMPLEMENTATION ===
+
+1. internal/db/db.go -- Connection pool setup using pgx/v5/pgxpool with Connect and Ping.
+
+2. internal/db/migrate.go -- Read .sql files from migrations/ directory in sorted order, execute each in a transaction.
+
+3. internal/db/postgres.go (new file) -- A struct that implements the Repository interface:
+   - type PgRepository struct { pool *pgxpool.Pool }
+   - func NewPgRepository(pool *pgxpool.Pool) *PgRepository
+   - Implement EVERY method from the Repository interface using parameterized SQL queries
+   - EndRetro should be transactional (Begin/Commit/Rollback)
+   - CreateDefaultColumns should create Happy, Confused, Sad columns with matching topics
+
+CRITICAL: Do NOT modify internal/db/repository.go or internal/models/models.go. Your PgRepository MUST satisfy the Repository interface exactly.
+
+SCOPE: Do NOT write HTTP handlers or templates. Only implement the data layer and its tests."
+	]
+
+	backend [
+		shape=box,
+		label="Implement Backend Logic",
+		model="anthropic/claude-opus-4.6",
+		max_retries=1,
+		check_cmd="go test ./internal/auth/... ./internal/handlers/... ./internal/sse/...",
+		prompt="You are implementing the authentication, HTTP handlers, and SSE hub for RetroQuest Returns using test-driven development.
+
+IMPORTANT: Read the contract files FIRST -- they define the exact function signatures and interfaces you must implement:
+- internal/auth/auth.go (function signatures with panic stubs -- replace the panics with real implementations)
+- internal/sse/hub.go (Hub struct and methods with panic stubs -- replace with real implementations)
+- internal/db/repository.go (Repository interface -- handlers receive this interface, NOT a concrete DB type)
+- internal/models/models.go (domain types -- do NOT modify)
+- internal/tmpl/renderer.go (Renderer interface -- handlers call Renderer.Render and Renderer.RenderFragment)
+- DESIGN.md
+
+Then read the existing code:
+- internal/db/postgres.go (implements Repository)
+- internal/handlers/ (stub files)
+
+=== TDD PROCESS ===
+
+Follow a strict test-driven development cycle for EVERY function you implement:
+
+1. WRITE THE TEST FIRST. For each function or handler method, write a failing test before writing any implementation code.
+
+2. For handler tests, create a mockRepository struct in your _test.go files that implements db.Repository with configurable return values. For auth tests, test signing/verification, cookie round-trips, middleware behavior, and validation functions. For SSE tests, test subscribe/unsubscribe, broadcast routing, and slow client handling.
+
+3. Run 'go test' and CONFIRM the test fails (compilation error, panic from stub, or wrong behavior). This proves the test is actually testing something.
+
+4. Write the MINIMUM implementation to make the test pass.
+
+5. Run 'go test' again and confirm GREEN. Only then move to the next function.
+
+TESTING CONVENTIONS:
+- Use table-driven tests with t.Run(tc.name, ...)
+- Use github.com/google/go-cmp/cmp for ALL assertions
+- Place test files next to the code: internal/auth/auth_test.go, internal/handlers/team_test.go, etc.
+
+=== WHAT TO IMPLEMENT ===
+
+1. AUTHENTICATION (internal/auth/auth.go) -- replace panic stubs:
+   - HashPassword/CheckPassword using bcrypt
+   - SetSessionCookie/ClearSessionCookie/GetTeamIDFromRequest using HMAC-SHA256 signed cookies
+   - RequireAuth middleware that checks cookie and sets team_id in request context
+   - ValidateTeamName, ValidatePassword, TeamNameToSlug
+   - Use COOKIE_SECRET from environment with a dev fallback
+
+2. HANDLERS (internal/handlers/) -- each handler struct holds a db.Repository, *sse.Hub, and tmpl.Renderer:
+   team.go: HandleLoginPage, HandleLoginSubmit, HandleCreatePage, HandleCreateSubmit, HandleLogout
+   thought.go: HandleCreateThought, HandleUpdateThought, HandleDeleteThought, HandleUpvoteThought, HandleDiscussThought, HandleColumnFragment, broadcastColumnUpdate helper
+   action_item.go: HandleCreateActionItem, HandleUpdateActionItem, HandleDeleteActionItem, HandleCompleteActionItem, HandleAssignActionItem, HandleActionItemsFragment
+   board.go: HandleRetroBoard, HandleEndRetro, HandleUpdateColumn, HandleArchivesPage, HandleArchivedBoard
+   sse.go: HandleEvents (delegates to hub.ServeHTTP)
+
+3. SSE HUB (internal/sse/hub.go) -- replace panic stubs:
+   - NewHub, Subscribe (returns channel + unsubscribe func), Broadcast (non-blocking), ServeHTTP
+
+CRITICAL: Do NOT modify internal/models/models.go, internal/db/repository.go, or internal/tmpl/renderer.go.
+
+SCOPE: Do NOT write HTML templates."
+	]
+
+	frontend [
+		shape=box,
+		label="Implement Frontend",
+		model="anthropic/claude-sonnet-4.6",
+		max_retries=1,
+		prompt="You are implementing the frontend templates for RetroQuest Returns. Read the contract files and handler code to understand the exact data structures templates receive.
+
+Start by reading:
+- internal/models/models.go (exact struct field names your templates must use)
+- internal/tmpl/renderer.go (Renderer interface -- understand page vs fragment rendering)
+- internal/handlers/ (all files -- see what template data each handler passes)
+- DESIGN.md (template structure section)
+- templates/base.html (existing scaffold)
+
+Then implement ALL templates with htmx and Tailwind CSS:
+
+1. templates/base.html -- Complete the base layout:
+   - Include Tailwind CSS via CDN (https://cdn.tailwindcss.com)
+   - Include htmx via CDN (https://unpkg.com/htmx.org@2.0.4)
+   - Include htmx SSE extension (https://unpkg.com/htmx-ext-sse@2.3.0/sse.js)
+   - Responsive nav bar with app name, team name (when logged in), logout link
+   - Content block for page-specific content
+   - Use a clean, modern color scheme (e.g., indigo/slate brand colors)
+
+2. templates/login.html -- Login page:
+   - Form with team name and password inputs, submit button
+   - POST to /login, display inline error on failure
+   - Link to create team page
+   - Centered card layout, mobile-friendly
+
+3. templates/create.html -- Create team page:
+   - Form: team name, password, confirm password
+   - POST to /create, display inline error on failure
+   - Link back to login
+
+4. templates/board.html -- Main retro board (the core page):
+   - Connect to SSE endpoint using hx-ext='sse' and sse-connect='/team/{teamId}/events'
+   - 4-section responsive grid: Happy, Confused, Sad thought columns + Action Items section
+   - Each column uses sse-swap='column-{id}-update' for live updates
+   - Action items section uses sse-swap='action-item-update'
+   - End Retro button with confirmation dialog
+   - Mobile bottom navigation for switching between columns
+   - Include JavaScript for inline editing of thoughts and action items
+
+5. templates/column.html -- Partial: column with header, create input, thought cards
+   - Color-coded header by topic (emerald for happy, sky for confused, rose for sad)
+   - Inline-editable column title via htmx
+   - Thought creation form with hx-post and hx-swap='none' (SSE handles the update)
+   - Thought count display
+   - Scrollable thought list
+
+6. templates/thought_card.html -- Partial: single thought card
+   - Message text with discussed styling (strikethrough, dimmed)
+   - Heart/upvote button with count
+   - Discuss toggle button
+   - Edit button (launches inline edit via JavaScript)
+   - Delete button with hx-confirm
+
+7. templates/action_items.html -- Partial: action items section
+   - Violet-colored header
+   - Action item creation form
+   - Item count display
+   - Scrollable list of action item cards
+
+8. templates/action_item_card.html -- Partial: single action item card
+   - Complete checkbox toggle
+   - Task text (editable inline)
+   - Assignee field
+   - Delete button with hx-confirm
+   - Completed items visually dimmed
+
+9. templates/archives.html -- Archives page with tabs for thought archives and action item archives
+10. templates/archived_board.html -- Single archived board view (read-only)
+
+Use the Go template 'dict' helper function for passing multiple values to partials (e.g., {{template \"thought_card\" (dict \"Thought\" . \"TeamID\" $.TeamID)}}).
+
+Make all templates responsive using Tailwind breakpoints. The retro board should feel pleasant and modern.
+
+SCOPE: Do NOT modify Go source files. Only create or edit files in the templates/ directory."
+	]
+
+	wiring [
+		shape=box,
+		label="Wire Server",
+		model="anthropic/claude-sonnet-4.6",
+		max_retries=1,
+		check_cmd="go test ./...",
+		prompt="You are wiring together all components of RetroQuest Returns into a working server, using test-driven development for the template renderer.
+
+IMPORTANT: Read the contract files FIRST:
+- internal/tmpl/renderer.go (the Renderer interface you MUST implement)
+- internal/db/repository.go (Repository interface -- NewServer accepts this, not a concrete pool)
+- internal/models/models.go (domain types)
+- internal/auth/auth.go (RequireAuth middleware)
+- internal/sse/hub.go (Hub)
+- internal/handlers/ (handler structs -- see what dependencies they need)
+- internal/server/server.go (current state)
+- cmd/server/main.go (current state)
+- DESIGN.md
+
+=== TDD PROCESS for TemplateRenderer ===
+
+1. Write tests FIRST in internal/tmpl/tmpl_test.go:
+   - Test Render with a simple test template
+   - Test RenderFragment with a partial
+   - Test RenderFragmentToString returns correct HTML string
+   - Test error cases (unknown template name)
+   Use table-driven tests and go-cmp.
+
+2. Run 'go test ./internal/tmpl/...' to confirm tests fail (panic from unimplemented interface or compile error).
+
+3. Implement TemplateRenderer to make the tests pass.
+
+4. Run 'go test ./...' to confirm ALL tests pass (including tests from previous stages).
+
+=== WHAT TO IMPLEMENT ===
+
+1. internal/tmpl/tmpl.go -- A struct that implements the Renderer interface:
+   - type TemplateRenderer struct { pages, fragments map[string]*template.Template }
+   - func NewTemplateRenderer(dir string) (*TemplateRenderer, error) -- loads and parses all templates
+   - Implement Render, RenderFragment, RenderFragmentToString from the Renderer interface
+   - FuncMap with helpers: 'dict', 'deref' (*string), 'formatDate'
+
+2. internal/server/server.go -- Server setup:
+   - NewServer(repo db.Repository, hub *sse.Hub, renderer tmpl.Renderer) *http.ServeMux
+   - Wire each handler struct with repo, hub, and renderer
+   - Register all routes using Go 1.22+ method-based patterns
+   - Apply auth.RequireAuth middleware to /team/* routes
+   - Serve static files from static/
+
+3. cmd/server/main.go -- Entry point:
+   - Load .env file
+   - Connect to PostgreSQL, create db.NewPgRepository(pool)
+   - Run migrations, parse templates via tmpl.NewTemplateRenderer
+   - Create sse.NewHub(), wire into server.NewServer
+   - Start Postgres LISTEN/NOTIFY listener goroutine
+   - Start HTTP server
+
+CRITICAL: Do NOT modify contract files (repository.go, renderer.go, models.go, auth.go signatures, hub.go signatures). Your TemplateRenderer MUST satisfy the tmpl.Renderer interface.
+
+SCOPE: Do NOT modify handler logic or database queries. Only wire and implement the template engine."
+	]
+
+	integration_tests [
+		shape=box,
+		label="Integration Tests",
+		model="anthropic/claude-sonnet-4.6",
+		max_retries=1,
+		check_cmd="go test ./...",
+		prompt="You are writing integration and end-to-end tests for RetroQuest Returns.
+
+The implementation stages have already written unit tests as part of their TDD process. Your job is to write INTEGRATION tests that the unit tests cannot cover -- tests that exercise complete request/response cycles through the full HTTP stack.
+
+Start by reading:
+- ALL existing test files (*_test.go) to understand what is already covered
+- internal/server/server.go (route wiring)
+- internal/handlers/ (all handler implementations)
+- internal/auth/auth.go (middleware)
+- internal/db/repository.go (Repository interface)
+
+=== WHAT TO WRITE ===
+
+Create internal/server/integration_test.go (or split across files as needed):
+
+1. MOCK SETUP: Create a comprehensive mockRepository that implements db.Repository with configurable behavior (stored data in maps, configurable errors). Also create a mock Renderer if needed.
+
+2. TEST HELPER: Create a setupTestServer() helper that wires a real http.ServeMux with mock dependencies and returns an httptest.Server.
+
+3. INTEGRATION TESTS using httptest.NewServer:
+   - Login flow: GET /login -> POST /login with valid credentials -> verify redirect + cookie set
+   - Create team flow: POST /create -> verify team created, columns created, cookie set, redirect
+   - Unauthorized access: GET /team/myteam/board without cookie -> verify redirect to login
+   - Thought lifecycle: create thought -> verify SSE event broadcast -> update thought -> delete thought
+   - Action item lifecycle: create -> toggle complete -> update assignee -> delete
+   - End retro: POST end-retro -> verify board created, SSE event sent
+   - Column update: PUT column title -> verify SSE broadcast
+
+4. SSE INTEGRATION: Test that SSE endpoint streams events correctly when thoughts/action items are modified.
+
+TESTING CONVENTIONS:
+- Use table-driven tests with t.Run(tc.name, ...)
+- Use github.com/google/go-cmp/cmp for ALL assertions
+- Each test should be independent -- create fresh mock state per test
+
+After writing tests, run 'go test ./...' and ensure ALL tests pass (both the new integration tests and all existing unit tests from previous stages). If a test reveals a genuine application bug, document it in TEST_NOTES.md but do NOT fix the application code.
+
+SCOPE: Do NOT fix application bugs -- document them in TEST_NOTES.md."
+	]
+
+	review_fix [
+		shape=box,
+		label="Review and Fix",
+		model="anthropic/claude-opus-4.6",
+		max_retries=2,
+		check_cmd="go test ./...",
+		prompt="You are reviewing the entire RetroQuest Returns codebase for correctness and completeness. Read every Go source file, every template, every test file, the migration SQL, and the design documents.
+
+Perform these checks systematically:
+
+1. COMPILATION AND TESTS: Run 'go test ./...' via the shell tool. ALL tests must pass. If any fail:
+   - Determine whether the failure is a bug in the application code or a bug in the test
+   - Fix whichever is wrong
+   - Re-run until all tests pass
+   Also read TEST_NOTES.md if it exists -- the testing stages may have documented application bugs they found but did not fix. Fix those bugs now.
+
+2. ROUTE CONSISTENCY: Compare internal/server/server.go routes with internal/handlers/ implementations. Every registered route must have a corresponding handler. Every handler must be wired.
+
+3. TEMPLATE CORRECTNESS: Check that:
+   - Every template referenced in handlers exists in templates/
+   - Template data fields match what handlers pass
+   - htmx attributes (hx-post, hx-get, hx-delete, hx-put, hx-target, hx-swap) reference correct URLs
+   - SSE event names in templates match what the backend sends
+
+4. DATABASE: Check that:
+   - All queries use parameterized inputs (no SQL injection)
+   - Migration SQL matches the models in internal/models/
+   - Foreign key references are correct
+
+5. FEATURE COMPLETENESS: Compare against FEATURE_SPEC.md and DESIGN.md:
+   - Is every Tier 1 feature implemented?
+   - Are there any missing handlers or templates?
+
+6. SECURITY: Check for:
+   - Password hashing (bcrypt) on team creation
+   - Auth middleware on all /team/* routes
+   - No secrets hardcoded in source
+
+7. TEST COVERAGE: Review the test suite:
+   - Are there unit tests for auth, handlers, SSE, and template rendering?
+   - Are there integration tests for complete request flows?
+   - If any areas lack tests, add them following TDD conventions (table-driven, go-cmp).
+
+Fix every issue you find. After fixing, run 'go test ./...' again to confirm all tests still pass.
+
+Write a file called REVIEW_NOTES.md documenting what you found and fixed."
+	]
+
+	final_check [
+		shape=box,
+		label="Final Verification",
+		model="anthropic/claude-opus-4.6",
+		max_retries=2,
+		goal_gate=true,
+		retry_target="review_fix",
+		check_cmd="go test ./...",
+		prompt="You are performing the final verification of RetroQuest Returns. A previous review stage already found and fixed issues. Read REVIEW_NOTES.md to see what was addressed.
+
+Do a focused check on these areas:
+
+1. Run 'go test ./...' via the shell tool. ALL tests must pass. If any fail, fix the issue and re-run until green. This is non-negotiable -- the pipeline cannot exit with failing tests.
+
+2. Read cmd/server/main.go and internal/server/server.go -- verify the server starts correctly, all routes are registered, middleware is applied.
+
+3. Read every handler file in internal/handlers/ -- verify each handler:
+   - Reads request data correctly
+   - Calls the right database function
+   - Returns the right template partial or redirect
+   - Sends NOTIFY for real-time updates where appropriate
+
+4. Read every template in templates/ -- verify:
+   - base.html includes all CDN links (Tailwind, htmx, htmx-sse)
+   - board.html has correct SSE connection setup
+   - All partials have correct htmx attributes
+   - Responsive classes are present
+
+5. Read internal/sse/hub.go -- verify SSE implementation:
+   - Clients can connect and disconnect cleanly
+   - Events are broadcast to correct team
+   - Postgres LISTEN is set up
+
+6. Check that go.mod lists all required dependencies (pgx, bcrypt, go-cmp).
+
+7. Verify test quality: spot-check a few test files. Are they using table-driven patterns? Are they using go-cmp? Do they have meaningful assertions?
+
+Fix any remaining issues you find. This is the last stage before the pipeline completes, so be thorough.
+
+Update REVIEW_NOTES.md with any additional findings from this pass."
+	]
+
+	start -> analyze -> design -> scaffold -> db_layer -> backend -> frontend -> wiring -> integration_tests -> review_fix -> final_check -> exit
+}

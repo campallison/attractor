@@ -31,8 +31,8 @@ import (
 
 const (
 	defaultModel        = "anthropic/claude-opus-4.6"
-	defaultPipeline     = "pipelines/retroquest-returns-v2.dot"
-	defaultWorkDir      = "/Users/allison/workspace/retroquest-returns-v2"
+	defaultPipeline     = "pipelines/retroquest-returns-v3.dot"
+	defaultWorkDir      = "/Users/allison/workspace/retroquest-returns-v3"
 	defaultBudgetTokens = 10_000_000 // safety net; actual usage should be well below with compression + model tiering
 	defaultDockerImage  = "golang:1.23"
 )

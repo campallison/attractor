@@ -512,3 +512,45 @@ func TestValidate_ExamplePipelineV2_ExpectedWarnings(t *testing.T) {
 		t.Error("expected linear_no_conditions info (pipeline has no conditional edges)")
 	}
 }
+
+func TestValidate_ExamplePipelineV3_NoErrors(t *testing.T) {
+	dotPath := filepath.Join(projectRoot(), "pipelines", "retroquest-returns-v3.dot")
+	src, err := os.ReadFile(dotPath)
+	if err != nil {
+		t.Skipf("skipping: pipeline file not found: %v", err)
+	}
+	g, err := dot.Parse(string(src))
+	if err != nil {
+		t.Fatalf("failed to parse %s: %v", dotPath, err)
+	}
+	diags := Validate(g)
+	for _, d := range diags {
+		t.Logf("[%s] %s", d.Severity, d)
+	}
+	if HasErrors(diags) {
+		t.Fatal("pipeline has ERROR-severity diagnostics")
+	}
+}
+
+func TestValidate_ExamplePipelineV3_ExpectedWarnings(t *testing.T) {
+	dotPath := filepath.Join(projectRoot(), "pipelines", "retroquest-returns-v3.dot")
+	src, err := os.ReadFile(dotPath)
+	if err != nil {
+		t.Skipf("skipping: pipeline file not found: %v", err)
+	}
+	g, err := dot.Parse(string(src))
+	if err != nil {
+		t.Fatalf("failed to parse %s: %v", dotPath, err)
+	}
+	diags := Validate(g)
+
+	noRecovery := findAllDiags(diags, "no_fail_recovery")
+	if len(noRecovery) == 0 {
+		t.Error("expected at least one no_fail_recovery warning (linear pipeline)")
+	}
+
+	linearInfo := findDiag(diags, "linear_no_conditions")
+	if linearInfo == nil {
+		t.Error("expected linear_no_conditions info (pipeline has no conditional edges)")
+	}
+}
