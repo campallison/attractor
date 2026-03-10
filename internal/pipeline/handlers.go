@@ -62,11 +62,21 @@ type CodergenBackend interface {
 	Run(node *dot.Node, prompt string, ctx *Context) (BackendResult, error)
 }
 
+// CheckRunner executes a shell command (typically inside the Docker sandbox)
+// and returns its combined stdout+stderr output. A nil error means the command
+// exited 0. Used by build gates to run compilation checks.
+type CheckRunner func(cmd string) (output string, err error)
+
 // CodergenHandler is the default handler for all LLM task nodes (shape=box).
 // It expands template variables in the prompt, calls the backend, and writes
 // prompt/response/status artifacts to the logs directory.
+//
+// When CheckRunner is non-nil and the node has a check_cmd attribute, the
+// handler runs the check after the agent completes. If the check fails, the
+// agent is re-invoked with the error output up to check_max_retries times.
 type CodergenHandler struct {
-	Backend CodergenBackend
+	Backend     CodergenBackend
+	CheckRunner CheckRunner
 }
 
 func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, logsRoot string) Outcome {
@@ -123,6 +133,64 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 			}
 			writeStatus(stageDir, outcome)
 			return outcome
+		}
+
+		// Build gate: run check_cmd after successful completion.
+		if checkCmd := node.CheckCmd(); checkCmd != "" && h.CheckRunner != nil {
+			maxAttempts := node.CheckMaxRetries()
+			for attempt := 1; attempt <= maxAttempts; attempt++ {
+				slog.Info("pipeline.buildgate", "node", node.ID, "attempt", attempt, "cmd", checkCmd)
+				checkOutput, checkErr := h.CheckRunner(checkCmd)
+				if checkErr == nil {
+					slog.Info("pipeline.buildgate.pass", "node", node.ID, "attempt", attempt)
+					break
+				}
+				slog.Warn("pipeline.buildgate.fail", "node", node.ID, "attempt", attempt, "output", truncate(checkOutput, 500))
+				_ = os.WriteFile(filepath.Join(stageDir, fmt.Sprintf("buildgate_attempt_%d.txt", attempt)), []byte(checkOutput), 0o644)
+
+				if attempt == maxAttempts {
+					reason := fmt.Sprintf("build gate failed after %d attempts: %s", maxAttempts, truncate(checkOutput, 200))
+					slog.Error("pipeline.buildgate.exhausted", "node", node.ID, "attempts", maxAttempts)
+					outcome := Outcome{
+						Status:        StatusFail,
+						FailureReason: reason,
+						Usage:         stageUsage,
+					}
+					writeStatus(stageDir, outcome)
+					return outcome
+				}
+
+				fixPrompt := prompt + "\n\n--- BUILD GATE FAILURE ---\nThe following compilation/check errors were found after your changes. Fix them:\n\n" + checkOutput
+				fixResult, fixErr := h.Backend.Run(node, fixPrompt, ctx)
+				if fixErr != nil {
+					slog.Warn("pipeline.buildgate.fix.error", "node", node.ID, "error", fixErr)
+					outcome := Outcome{
+						Status:        StatusFail,
+						FailureReason: fmt.Sprintf("build gate fix attempt failed: %v", fixErr),
+						Usage:         stageUsage,
+					}
+					writeStatus(stageDir, outcome)
+					return outcome
+				}
+
+				stageUsage.Rounds += fixResult.Rounds
+				stageUsage.InputTokens += fixResult.Usage.InputTokens
+				stageUsage.OutputTokens += fixResult.Usage.OutputTokens
+				stageUsage.TotalTokens += fixResult.Usage.TotalTokens
+				responseText = fixResult.Response
+
+				if fixResult.Exhausted {
+					reason := fmt.Sprintf("agent exhausted during build gate fix (attempt %d)", attempt)
+					slog.Warn("pipeline.buildgate.fix.exhausted", "node", node.ID, "attempt", attempt)
+					outcome := Outcome{
+						Status:        StatusFail,
+						FailureReason: reason,
+						Usage:         stageUsage,
+					}
+					writeStatus(stageDir, outcome)
+					return outcome
+				}
+			}
 		}
 	} else {
 		responseText = "[simulated] response for stage: " + node.ID
@@ -192,10 +260,9 @@ func writeStatus(stageDir string, o Outcome) {
 }
 
 // DefaultHandlerRegistry creates a registry pre-loaded with the Phase 1
-// built-in handlers. The codergen handler uses the provided backend (may be
-// nil for simulation mode).
-func DefaultHandlerRegistry(backend CodergenBackend) *HandlerRegistry {
-	codergen := CodergenHandler{Backend: backend}
+// built-in handlers. The caller constructs the CodergenHandler with the
+// desired backend and optional CheckRunner for build gates.
+func DefaultHandlerRegistry(codergen CodergenHandler) *HandlerRegistry {
 	r := NewHandlerRegistry(codergen)
 	r.Register("start", StartHandler{})
 	r.Register("exit", ExitHandler{})

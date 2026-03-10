@@ -24,7 +24,12 @@ graph TB
         llmPkg["internal/llm"]
     end
 
+    subgraph infra [Infrastructure]
+        loggingPkg["internal/logging"]
+    end
+
     subgraph entrypoints [Entry Points]
+        runRetroquest["cmd/run-retroquest"]
         testLLM["cmd/test-llm"]
         testAgent["cmd/test-agent"]
         testPipeline["cmd/test-pipeline"]
@@ -34,6 +39,12 @@ graph TB
     llmPkg --> agentPkg
     toolsPkg --> agentPkg
     agentPkg --> pipelinePkg
+
+    llmPkg --> runRetroquest
+    pipelinePkg --> runRetroquest
+    dotPkg --> runRetroquest
+    loggingPkg --> runRetroquest
+    toolsPkg --> runRetroquest
 
     llmPkg --> testLLM
     llmPkg --> testAgent
@@ -65,7 +76,7 @@ graph LR
     dot --> pipeline
 ```
 
-Key property: `internal/dot` depends on nothing internal. `internal/pipeline` depends on `internal/dot` (for graph types) and `internal/agent` (for the codergen backend adapter). `internal/agent` depends on `internal/llm` and `internal/tools`. This forms a clean DAG with no risk of circular imports.
+Key property: `internal/dot` depends on nothing internal. `internal/pipeline` depends on `internal/dot` (for graph types) and `internal/agent` (for the codergen backend adapter). `internal/agent` depends on `internal/llm` and `internal/tools`. `internal/logging` depends on nothing internal and is used only by `cmd/run-retroquest`. This forms a clean DAG with no risk of circular imports.
 
 ---
 
@@ -128,8 +139,9 @@ ProviderError         -- base type for HTTP errors
 
 ### Design Notes
 
-- **Functional options pattern** for `Client` construction: `WithBaseURL()`, `WithHTTPClient()`.
+- **Functional options pattern** for `Client` construction: `WithBaseURL()`, `WithHTTPClient()`, `WithZDR()`.
 - **`NewClientFromEnv()`** loads `.env` automatically so local development works without shell exports.
+- **Zero Data Retention (ZDR):** `WithZDR()` option adds OpenRouter's `provider.zdr: true` preference, routing requests only to providers that enforce zero data retention.
 - **Wire format translation** is isolated in `openrouter.go` (unexported). Application code only sees the unified types in `types.go`. Adding a new provider means adding a new translation layer without changing any interfaces.
 
 ### Files
@@ -229,22 +241,27 @@ This preserves the beginning (context) and end (usually the result) of long outp
 | Function | Returns | Used By |
 |---|---|---|
 | `RunTask()` | `error` | `cmd/test-agent` -- prints to stdout |
-| `RunTaskCapture()` | `(string, llm.Usage, int, error)` | Pipeline codergen handler -- captures response text, accumulated token usage, and round count |
+| `RunTaskCapture()` | `(string, llm.Usage, int, []llm.Message, error)` | Pipeline codergen handler -- captures response text, accumulated token usage, round count, and full conversation history |
 
-Both run the identical agent loop; `RunTaskCapture` was added for Layer 3 so the pipeline engine can capture LLM responses without stdout side effects. It returns the final text, the total `llm.Usage` accumulated across all LLM calls in the loop, and the number of rounds executed.
+Both run the identical agent loop; `RunTaskCapture` was added for Layer 3 so the pipeline engine can capture LLM responses without stdout side effects. It returns the final text, the total `llm.Usage` accumulated across all LLM calls in the loop, the number of rounds executed, and the full conversation history (saved as `conversation.json` for post-mortem analysis).
+
+**Agent exhaustion:** When the agent hits the `maxRounds` limit without producing a text-only response, `RunTaskCapture` returns `agent.ErrRoundLimitReached`. This sentinel error causes the pipeline's codergen handler to report `StatusFail`, preventing silent failures from being treated as success.
+
+**Conversation compression:** The agent loop compresses conversation history as it grows by summarizing old tool call results into concise summaries, reducing input token costs while preserving enough context for the model to stay on track.
 
 ### Files
 
-| File | Lines | Purpose |
-|---|---|---|
-| `agent/agent.go` | 172 | RunTask, RunTaskCapture (with usage tracking), executeTool, round loop |
-| `agent/prompt.go` | 19 | BuildSystemPrompt with env context (workdir, platform, date) |
-| `tools/tools.go` | 64 | ToolExecutor, RegisteredTool, Registry, DefaultRegistry |
-| `tools/readfile.go` | 159 | read_file implementation, resolvePath with symlink resolution, file size guard |
-| `tools/writefile.go` | 63 | write_file implementation |
-| `tools/editfile.go` | 99 | edit_file implementation |
-| `tools/shell.go` | 193 | shell implementation, Docker container management, broadened env filtering |
-| `tools/truncate.go` | 45 | Output truncation logic |
+| File | Purpose |
+|---|---|
+| `agent/agent.go` | RunTask, RunTaskCapture (with usage tracking, exhaustion detection), executeTool, round loop |
+| `agent/prompt.go` | BuildSystemPrompt with env context, git deny-list rules, network rules |
+| `agent/compress.go` | Conversation history compression (summarizes old tool results to reduce token costs) |
+| `tools/tools.go` | ToolExecutor, RegisteredTool, Registry, DefaultRegistry |
+| `tools/readfile.go` | read_file implementation, resolvePath with symlink resolution, sensitive file deny-list |
+| `tools/writefile.go` | write_file implementation |
+| `tools/editfile.go` | edit_file implementation |
+| `tools/shell.go` | shell implementation, Docker container management, git command deny-list, env filtering |
+| `tools/truncate.go` | Output truncation logic |
 
 ---
 
@@ -313,6 +330,9 @@ Node
   .Model() string                   -- per-node LLM model override (empty = use default)
   .GoalGate() bool
   .MaxRetries() int
+  .CheckCmd() string                -- build gate command (e.g. "go build ./...")
+  .CheckMaxRetries() int            -- max build gate retries (default 3)
+  .RetryTarget() string             -- node to jump to on goal gate failure
   .GetInt(key, fallback) int
   .GetBool(key, fallback) bool
   .GetDuration(key, fallback) time.Duration
@@ -409,6 +429,7 @@ classDiagram
 
     class CodergenHandler {
         Backend CodergenBackend
+        CheckRunner CheckRunner
         Execute() Outcome
     }
 
@@ -417,6 +438,8 @@ classDiagram
         Usage llm.Usage
         Model string
         Rounds int
+        Conversation []llm.Message
+        Exhausted bool
     }
 
     class CodergenBackend {
@@ -427,6 +450,7 @@ classDiagram
     class AgentBackend {
         Client agent.Completer
         Model string
+        ModelOverride string
         WorkDir string
         Run(node, prompt, ctx) BackendResult error
     }
@@ -468,6 +492,7 @@ sequenceDiagram
     participant Engine
     participant Codergen as CodergenHandler
     participant Backend as CodergenBackend
+    participant CheckRunner
     participant AgentLoop as agent.RunTaskCapture
     participant LLM as OpenRouter
 
@@ -475,18 +500,43 @@ sequenceDiagram
     Codergen->>Codergen: Expand $goal in prompt
     Codergen->>Codergen: Write prompt.md to logs
     Codergen->>Backend: Run(node, prompt, ctx)
-    Backend->>Backend: Resolve model (node override or default)
+    Backend->>Backend: Resolve model (node/override/default)
     Backend->>AgentLoop: RunTaskCapture(client, model, prompt, workDir)
     AgentLoop->>LLM: Complete (with tools)
     LLM-->>AgentLoop: Response (text or tool calls)
-    Note over AgentLoop,LLM: Loop until text-only response
-    AgentLoop-->>Backend: (text, usage, rounds)
-    Backend-->>Codergen: BackendResult{Response, Usage, Model, Rounds}
-    Codergen->>Codergen: Write response.md
-    Codergen->>Codergen: Write usage.json
-    Codergen->>Codergen: Write status.json
-    Codergen-->>Engine: Outcome{SUCCESS, context_updates, Usage}
+    Note over AgentLoop,LLM: Loop until text-only or round limit
+    AgentLoop-->>Backend: (text, usage, rounds, conversation, error)
+    Backend-->>Codergen: BackendResult{Response, Usage, Model, Rounds, Conversation, Exhausted}
+
+    alt Exhausted (round limit hit)
+        Codergen-->>Engine: Outcome{FAIL, "agent exhausted"}
+    else check_cmd is set
+        Codergen->>CheckRunner: Run(check_cmd)
+        alt Check passes
+            Codergen->>Codergen: Write artifacts
+            Codergen-->>Engine: Outcome{SUCCESS}
+        else Check fails
+            Codergen->>Backend: Re-run with error output
+            Note over Codergen,CheckRunner: Retry up to check_max_retries
+            Codergen->>CheckRunner: Run(check_cmd) again
+        end
+    else no check_cmd
+        Codergen->>Codergen: Write artifacts
+        Codergen-->>Engine: Outcome{SUCCESS}
+    end
 ```
+
+#### Build Gates
+
+When a node has `check_cmd` set (e.g., `check_cmd="go build ./..."`), the codergen handler runs this command after the agent completes. If the check fails:
+
+1. The error output is saved as `buildgate_attempt_N.txt`
+2. The agent is re-invoked with the original prompt + "--- BUILD GATE FAILURE ---" + the error output
+3. This repeats up to `check_max_retries` times (default 3)
+4. Token usage is accumulated across all retry invocations
+5. If all retries are exhausted, the stage fails
+
+Build gates enable **contract-first design**: the design stage produces Go interface files, downstream stages implement against them, and the compiler enforces consistency via `go build ./...` checks.
 
 #### Context
 
@@ -585,6 +635,10 @@ Run before execution to catch structural errors in the graph:
 | `goal_gate_has_retry` | WARNING | Goal gate nodes have a retry path |
 | `prompt_on_llm_nodes` | WARNING | Codergen nodes have a prompt or label |
 | `max_retries` | WARNING | `max_retries` does not exceed 100 |
+| `no_fail_recovery` | WARNING | Codergen nodes with only unconditional outgoing edges (any failure halts the pipeline) |
+| `exit_reachable` | WARNING | All nodes have a path to an exit node (reverse reachability) |
+| `retry_path_to_gate` | WARNING | `retry_target` node can reach back to the goal gate that references it |
+| `linear_no_conditions` | INFO | Pipeline has zero conditional edges (any stage failure halts execution) |
 
 #### Run Directory Structure
 
@@ -592,30 +646,34 @@ Each pipeline execution produces:
 
 ```
 {logs_root}/
+  pipeline.log                      -- structured JSON log (DEBUG level, all events)
   checkpoint.json                   -- latest checkpoint
+  summary.json                      -- final results (status, usage, duration, model info)
   {node_id}/
     prompt.md                       -- rendered prompt sent to LLM
     response.md                     -- LLM response text
     status.json                     -- node execution outcome
     usage.json                      -- token usage (model, rounds, input/output/total tokens)
+    conversation.json               -- full LLM conversation history (for post-mortem)
+    buildgate_attempt_N.txt         -- build gate error output (if check_cmd failed)
 ```
 
 #### Files
 
-| File | Lines | Purpose |
-|---|---|---|
-| `dot/graph.go` | 259 | Graph, Node, Edge types, accessors (incl. Model()), helpers, ParseDuration |
-| `dot/lexer.go` | 319 | Tokenizer with comment stripping and position tracking |
-| `dot/parser.go` | 358 | Recursive descent parser for DOT subset, recursion depth limit |
-| `pipeline/outcome.go` | 42 | StageStatus enum, Outcome struct, and StageUsage type |
-| `pipeline/context.go` | 95 | Thread-safe key-value context |
-| `pipeline/condition.go` | 64 | Condition expression evaluator |
-| `pipeline/handler.go` | 64 | Handler interface, HandlerRegistry, shape mapping |
-| `pipeline/handlers.go` | 192 | Start, Exit, Conditional, Codergen handlers, BackendResult, backends |
-| `pipeline/engine.go` | 401 | Core loop, edge selection, goal gates, retry, backoff, usage aggregation |
-| `pipeline/checkpoint.go` | 84 | JSON checkpoint save/load/resume |
-| `pipeline/validate.go` | 399 | 12 lint rules (incl. max_retries check), Diagnostic model, ValidateOrError |
-| `pipeline/backend.go` | 34 | AgentBackend: adapts Layer 2 agent loop to CodergenBackend, per-node model override |
+| File | Purpose |
+|---|---|
+| `dot/graph.go` | Graph, Node, Edge types, accessors (Model, CheckCmd, CheckMaxRetries, etc.), ParseDuration |
+| `dot/lexer.go` | Tokenizer with comment stripping and position tracking |
+| `dot/parser.go` | Recursive descent parser for DOT subset, recursion depth limit |
+| `pipeline/outcome.go` | StageStatus enum, Outcome struct, and StageUsage type |
+| `pipeline/context.go` | Thread-safe key-value context |
+| `pipeline/condition.go` | Condition expression evaluator |
+| `pipeline/handler.go` | Handler interface, HandlerRegistry, shape mapping |
+| `pipeline/handlers.go` | Start, Exit, Conditional, Codergen handlers (with build gate logic), CheckRunner, BackendResult, backends |
+| `pipeline/engine.go` | Core loop, edge selection, goal gates, retry, backoff, usage aggregation, failure halting |
+| `pipeline/checkpoint.go` | JSON checkpoint save/load/resume |
+| `pipeline/validate.go` | 16 lint rules, Diagnostic model, ValidateOrError |
+| `pipeline/backend.go` | AgentBackend: adapts Layer 2 agent loop to CodergenBackend, per-node model override, model override flag |
 
 ---
 
@@ -633,8 +691,9 @@ flowchart TD
 
     ValidGraph --> RunConfig["RunConfig{\n  Graph,\n  LogsRoot,\n  Registry,\n  MaxIterations,\n  MaxBudgetTokens\n}"]
 
-    LLMClient["llm.NewClientFromEnv()"] --> AgentBackend["AgentBackend{\n  Client,\n  Model,\n  WorkDir\n}"]
-    AgentBackend --> Registry["DefaultHandlerRegistry(\n  backend\n)"]
+    LLMClient["llm.NewClientFromEnv()"] --> AgentBackend["AgentBackend{\n  Client,\n  Model,\n  ModelOverride,\n  WorkDir\n}"]
+    AgentBackend --> CodergenH["CodergenHandler{\n  Backend,\n  CheckRunner\n}"]
+    CodergenH --> Registry["DefaultHandlerRegistry(\n  codergenHandler\n)"]
     Registry --> RunConfig
 
     RunConfig --> Run["pipeline.Run()"]
@@ -643,7 +702,7 @@ flowchart TD
 
     NodeLoop --> Result["RunResult{\n  Status,\n  CompletedNodes,\n  NodeOutcomes,\n  Warnings,\n  TotalUsage,\n  StageUsages\n}"]
 
-    NodeLoop --> Artifacts["Logs directory:\n  checkpoint.json\n  {node}/prompt.md\n  {node}/response.md\n  {node}/status.json\n  {node}/usage.json"]
+    NodeLoop --> Artifacts["Logs directory:\n  pipeline.log\n  checkpoint.json\n  summary.json\n  {node}/prompt.md\n  {node}/response.md\n  {node}/status.json\n  {node}/usage.json\n  {node}/conversation.json\n  {node}/buildgate_attempt_N.txt"]
 ```
 
 ---
@@ -657,12 +716,62 @@ Several defense-in-depth measures have been added beyond the basic implementatio
 | File tools | Path containment: `resolvePath` rejects absolute paths and paths escaping `workDir` | `tools/readfile.go` |
 | File tools | Symlink resolution: `filepath.EvalSymlinks` re-checks containment on real path | `tools/readfile.go` |
 | File tools | File size guard: `read_file` rejects files over 10MB | `tools/readfile.go` |
+| File tools | Sensitive file deny-list: blocks reads of `.env`, `.env.*` files | `tools/readfile.go` |
 | Shell tool | Broadened env var filtering: suffixes `_KEY`, `_CREDENTIALS`, `_PASSWD`, `_AUTH`, `_PRIVATE` | `tools/shell.go` |
+| Shell tool | Git command deny-list: blocks `push`, `remote`, `config`, `credential`, `submodule` | `tools/shell.go` |
+| System prompt | Explicit security rules for git (allow/deny list) and network (no exfiltration) | `agent/prompt.go` |
 | Pipeline handlers | Node ID sanitization: strips path separators and `..` from IDs before filesystem use | `pipeline/handlers.go` |
 | Pipeline engine | Max iteration guard: configurable cap (default 1000) prevents infinite loops | `pipeline/engine.go` |
 | Pipeline engine | Max retries cap: hard limit of 100 in `executeWithRetry` | `pipeline/engine.go` |
+| Pipeline engine | Failure halting: pipeline stops when a failed node has only unconditional edges | `pipeline/engine.go` |
+| Pipeline engine | Agent exhaustion detection: `ErrRoundLimitReached` prevents silent failures | `agent/agent.go` |
+| Pipeline engine | Budget cap with 50%/75% threshold warnings | `pipeline/engine.go` |
 | Pipeline engine | Checkpoint warnings: save errors surfaced via `RunResult.Warnings` | `pipeline/engine.go` |
+| Runner | Pre-flight checklist: validates workdir, API key, Docker, model IDs, budget | `cmd/run-retroquest/main.go` |
 | DOT parser | Recursion depth limit: max 50 nested subgraphs prevents stack overflow | `dot/parser.go` |
+
+---
+
+## Structured Logging (`internal/logging`)
+
+All packages use Go's `log/slog` for structured, leveled logging. The `logging` package configures a multi-handler:
+
+- **Terminal (stderr):** `slog.TextHandler` at INFO level -- concise, human-readable output during pipeline runs
+- **Log file (JSON):** `slog.JSONHandler` at DEBUG level -- machine-readable, comprehensive log for post-mortem analysis
+
+Key log events across the codebase:
+
+| Package | Event | Level |
+|---|---|---|
+| `pipeline/engine` | Node start/done, edge selection, retries, budget warnings (50%/75%), halts | INFO/WARN |
+| `pipeline/handlers` | Stage start/done, build gate pass/fail/exhausted, conversation saved | INFO/WARN/ERROR |
+| `pipeline/condition` | Condition evaluation results | DEBUG |
+| `agent/agent` | Round start, tool execution, text snippets, natural completion, round limit | INFO/WARN/DEBUG |
+| `agent/compress` | Compression statistics (messages compressed, tokens saved) | DEBUG |
+| `tools/*` | File reads/writes/edits, shell commands, access denials | INFO/WARN |
+
+---
+
+## Runner (`cmd/run-retroquest`)
+
+The runner is the entry point for executing the RetroQuest Returns pipeline. It orchestrates the full lifecycle:
+
+1. **Parse** the DOT pipeline file
+2. **Validate** the graph against lint rules
+3. **Pre-flight checklist:** work directory, API key format, Docker daemon, model ID validation (pings OpenRouter API), budget sanity
+4. **Set up** logging, Docker container, LLM client, and handler registry
+5. **Run** the pipeline
+6. **Report** results and write `summary.json`
+
+Key flags:
+
+| Flag | Purpose |
+|---|---|
+| `--simulate` | Use `SimulatedBackend` (no LLM, no Docker) for structural testing |
+| `--model-override MODEL` | Force all stages to use a specific model (useful for cheap test runs) |
+| `--zdr` | Enforce Zero Data Retention routing on OpenRouter |
+| `--budget N` | Max total tokens before stopping |
+| `--no-docker` | Skip Docker container setup (build gates disabled) |
 
 ---
 
@@ -697,6 +806,6 @@ All tests follow consistent patterns:
 - **`httptest.NewServer()`** for mock HTTP servers in LLM client tests
 - **Mock `Completer` interface** for agent loop tests without real LLM calls
 - **`SimulatedBackend`** for pipeline engine tests without real LLM calls
-- **`failingBackend`** for testing error paths through the codergen handler
-
-Test count: 140 top-level tests (354 including table-driven subtests) across 5 packages.
+- **`failingBackend`** and **`exhaustedBackend`** for testing error paths through the codergen handler
+- **`buildGateBackend`** with mock `CheckRunner` for testing build gate retry logic
+- **Regression tests** that parse and validate actual pipeline DOT files (`retroquest-returns.dot`, `retroquest-returns-v2.dot`)

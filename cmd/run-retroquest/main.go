@@ -125,7 +125,8 @@ func main() {
 
 	if *simulate {
 		fmt.Println("    Mode: SIMULATED (no LLM calls, no Docker)")
-		registry = pipeline.DefaultHandlerRegistry(pipeline.SimulatedBackend{})
+		fmt.Println("    Build gates: skipped (simulate mode)")
+		registry = pipeline.DefaultHandlerRegistry(pipeline.CodergenHandler{Backend: pipeline.SimulatedBackend{}})
 	} else {
 		// 3b. Start Docker sandbox
 		if *noDocker {
@@ -160,7 +161,18 @@ func main() {
 			WorkDir:       *workDir,
 		}
 
-		registry = pipeline.DefaultHandlerRegistry(backend)
+		var checkRunner pipeline.CheckRunner
+		if !*noDocker {
+			checkRunner = makeCheckRunner()
+			fmt.Println("    Build gates: enabled")
+		} else {
+			fmt.Println("    Build gates: disabled (--no-docker)")
+		}
+
+		registry = pipeline.DefaultHandlerRegistry(pipeline.CodergenHandler{
+			Backend:     backend,
+			CheckRunner: checkRunner,
+		})
 	}
 
 	// 5. Run pipeline
@@ -446,6 +458,16 @@ func collectModelIDs(g *dot.Graph, defaultModel string) []string {
 		models = append(models, m)
 	}
 	return models
+}
+
+func makeCheckRunner() pipeline.CheckRunner {
+	return func(cmd string) (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		dockerCmd := exec.CommandContext(ctx, "docker", "exec", "attractor-sandbox", "sh", "-c", cmd)
+		out, err := dockerCmd.CombinedOutput()
+		return string(out), err
+	}
 }
 
 func fetchOpenRouterModels() (map[string]bool, error) {

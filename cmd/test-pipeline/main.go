@@ -94,7 +94,7 @@ func main() {
 		WorkDir: workDir,
 	}
 
-	registry := pipeline.DefaultHandlerRegistry(backend)
+	registry := pipeline.DefaultHandlerRegistry(pipeline.CodergenHandler{Backend: backend})
 
 	result, err := pipeline.Run(pipeline.RunConfig{
 		Graph:    g,

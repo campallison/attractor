@@ -160,7 +160,7 @@ func TestCodergenHandler_FallbackToLabel(t *testing.T) {
 }
 
 func TestHandlerRegistry_Resolve(t *testing.T) {
-	registry := DefaultHandlerRegistry(nil)
+	registry := DefaultHandlerRegistry(CodergenHandler{})
 
 	tests := []struct {
 		name     string
@@ -411,5 +411,157 @@ func TestCodergenHandler_PathTraversalNodeID(t *testing.T) {
 	escaped := filepath.Join(parent, "etc")
 	if _, err := os.Stat(escaped); err == nil {
 		t.Errorf("path traversal succeeded: directory %q should not exist", escaped)
+	}
+}
+
+// --- Build gate tests ---
+
+func TestCodergenHandler_BuildGatePass(t *testing.T) {
+	logsRoot := t.TempDir()
+	h := CodergenHandler{
+		Backend: SimulatedBackend{},
+		CheckRunner: func(cmd string) (string, error) {
+			return "", nil // check passes
+		},
+	}
+	node := &dot.Node{ID: "build_ok", Attrs: map[string]string{
+		"shape":     "box",
+		"prompt":    "Implement something",
+		"check_cmd": "go build ./...",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	out := h.Execute(node, NewContext(), g, logsRoot)
+
+	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// buildGateBackend tracks how many times Run is called and fails the check
+// on the first N attempts.
+type buildGateBackend struct {
+	calls int
+}
+
+func (b *buildGateBackend) Run(node *dot.Node, prompt string, _ *Context) (BackendResult, error) {
+	b.calls++
+	return BackendResult{
+		Response: fmt.Sprintf("attempt %d for %s", b.calls, node.ID),
+		Usage:    llm.Usage{InputTokens: 1000, OutputTokens: 200, TotalTokens: 1200},
+		Model:    "test-model",
+		Rounds:   3,
+	}, nil
+}
+
+func TestCodergenHandler_BuildGateFailThenFix(t *testing.T) {
+	logsRoot := t.TempDir()
+	checkAttempts := 0
+	backend := &buildGateBackend{}
+	h := CodergenHandler{
+		Backend: backend,
+		CheckRunner: func(cmd string) (string, error) {
+			checkAttempts++
+			if checkAttempts == 1 {
+				return "internal/db/queries.go:15: undefined: models.Team", fmt.Errorf("exit status 1")
+			}
+			return "", nil // passes on second check
+		},
+	}
+	node := &dot.Node{ID: "fixable", Attrs: map[string]string{
+		"shape":     "box",
+		"prompt":    "Build the DB layer",
+		"check_cmd": "go build ./...",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	out := h.Execute(node, NewContext(), g, logsRoot)
+
+	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(2, backend.calls); diff != "" {
+		t.Errorf("backend should be called twice (initial + fix) (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(2, checkAttempts); diff != "" {
+		t.Errorf("check should run twice (-want +got):\n%s", diff)
+	}
+	// Usage should be accumulated from both backend calls.
+	if out.Usage == nil {
+		t.Fatal("expected usage to be recorded")
+	}
+	if diff := cmp.Diff(2400, out.Usage.TotalTokens); diff != "" {
+		t.Errorf("total tokens should be sum of both calls (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(6, out.Usage.Rounds); diff != "" {
+		t.Errorf("rounds should be sum of both calls (-want +got):\n%s", diff)
+	}
+
+	// Build gate error log should exist.
+	errorFile := filepath.Join(logsRoot, "fixable", "buildgate_attempt_1.txt")
+	data, err := os.ReadFile(errorFile)
+	if err != nil {
+		t.Fatalf("buildgate_attempt_1.txt should be written: %v", err)
+	}
+	if !strings.Contains(string(data), "undefined: models.Team") {
+		t.Errorf("error file should contain build error, got %q", string(data))
+	}
+}
+
+func TestCodergenHandler_BuildGateExhausted(t *testing.T) {
+	logsRoot := t.TempDir()
+	backend := &buildGateBackend{}
+	h := CodergenHandler{
+		Backend: backend,
+		CheckRunner: func(cmd string) (string, error) {
+			return "always fails: undefined: foo", fmt.Errorf("exit status 1")
+		},
+	}
+	node := &dot.Node{ID: "unfixable", Attrs: map[string]string{
+		"shape":              "box",
+		"prompt":             "Build something",
+		"check_cmd":          "go build ./...",
+		"check_max_retries":  "2",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	out := h.Execute(node, NewContext(), g, logsRoot)
+
+	if diff := cmp.Diff(StatusFail, out.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+	if !strings.Contains(out.FailureReason, "build gate failed") {
+		t.Errorf("failure reason should mention build gate, got %q", out.FailureReason)
+	}
+	// Initial call + 1 fix attempt (2 check attempts, fails on 2nd = max retries exhausted).
+	// check_max_retries=2 means 2 check attempts total.
+	if diff := cmp.Diff(2, backend.calls); diff != "" {
+		t.Errorf("backend call count mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestCodergenHandler_NoCheckCmd(t *testing.T) {
+	logsRoot := t.TempDir()
+	checkCalled := false
+	h := CodergenHandler{
+		Backend: SimulatedBackend{},
+		CheckRunner: func(cmd string) (string, error) {
+			checkCalled = true
+			return "", nil
+		},
+	}
+	node := &dot.Node{ID: "no_gate", Attrs: map[string]string{
+		"shape":  "box",
+		"prompt": "No build gate here",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	out := h.Execute(node, NewContext(), g, logsRoot)
+
+	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+	if checkCalled {
+		t.Error("CheckRunner should not be called when node has no check_cmd")
 	}
 }

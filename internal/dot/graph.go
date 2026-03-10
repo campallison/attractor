@@ -147,6 +147,14 @@ func (n *Node) FallbackRetryTarget() string { return n.GetAttr("fallback_retry_t
 // MaxRetries returns the node's max_retries attribute, defaulting to 0.
 func (n *Node) MaxRetries() int { return n.GetInt("max_retries", 0) }
 
+// CheckCmd returns the node's check_cmd attribute (e.g. "go build ./...").
+// When non-empty, the engine runs this command after the stage completes and
+// retries the stage if it fails.
+func (n *Node) CheckCmd() string { return n.GetAttr("check_cmd", "") }
+
+// CheckMaxRetries returns the maximum number of build-gate retries, defaulting to 3.
+func (n *Node) CheckMaxRetries() int { return n.GetInt("check_max_retries", 3) }
+
 // GetInt returns a node attribute parsed as an integer, or the fallback.
 func (n *Node) GetInt(key string, fallback int) int {
 	v, ok := n.Attrs[key]

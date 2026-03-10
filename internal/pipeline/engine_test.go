@@ -230,7 +230,7 @@ func TestRun_LinearPipeline(t *testing.T) {
 	result, err := Run(RunConfig{
 		Graph:    linearGraph(),
 		LogsRoot: logsRoot,
-		Registry: DefaultHandlerRegistry(nil),
+		Registry: DefaultHandlerRegistry(CodergenHandler{}),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -264,7 +264,7 @@ func TestRun_BranchingPipeline(t *testing.T) {
 	result, err := Run(RunConfig{
 		Graph:    g,
 		LogsRoot: logsRoot,
-		Registry: DefaultHandlerRegistry(nil),
+		Registry: DefaultHandlerRegistry(CodergenHandler{}),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -284,7 +284,7 @@ func TestRun_ContextFlows(t *testing.T) {
 	result, err := Run(RunConfig{
 		Graph:    g,
 		LogsRoot: logsRoot,
-		Registry: DefaultHandlerRegistry(nil),
+		Registry: DefaultHandlerRegistry(CodergenHandler{}),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -352,7 +352,7 @@ func TestRun_GoalGateSuccess(t *testing.T) {
 	result, err := Run(RunConfig{
 		Graph:    g,
 		LogsRoot: logsRoot,
-		Registry: DefaultHandlerRegistry(SimulatedBackend{}),
+		Registry: DefaultHandlerRegistry(CodergenHandler{Backend: SimulatedBackend{}}),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -367,7 +367,7 @@ func TestRun_CheckpointWritten(t *testing.T) {
 	_, err := Run(RunConfig{
 		Graph:    linearGraph(),
 		LogsRoot: logsRoot,
-		Registry: DefaultHandlerRegistry(nil),
+		Registry: DefaultHandlerRegistry(CodergenHandler{}),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -398,7 +398,7 @@ func TestRun_GraphAttributesMirrored(t *testing.T) {
 	_, err := Run(RunConfig{
 		Graph:    g,
 		LogsRoot: logsRoot,
-		Registry: DefaultHandlerRegistry(nil),
+		Registry: DefaultHandlerRegistry(CodergenHandler{}),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -421,7 +421,7 @@ func TestRun_NoStartNode(t *testing.T) {
 	_, err := Run(RunConfig{
 		Graph:    g,
 		LogsRoot: t.TempDir(),
-		Registry: DefaultHandlerRegistry(nil),
+		Registry: DefaultHandlerRegistry(CodergenHandler{}),
 	})
 	if err == nil {
 		t.Fatal("expected error for missing start node")
@@ -506,7 +506,7 @@ func TestRun_CheckpointWarning(t *testing.T) {
 	result, err := Run(RunConfig{
 		Graph:    g,
 		LogsRoot: "/dev/null/impossible",
-		Registry: DefaultHandlerRegistry(nil),
+		Registry: DefaultHandlerRegistry(CodergenHandler{}),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -546,7 +546,7 @@ func TestRun_AggregatesUsage(t *testing.T) {
 	result, err := Run(RunConfig{
 		Graph:    g,
 		LogsRoot: t.TempDir(),
-		Registry: DefaultHandlerRegistry(usageBackend{}),
+		Registry: DefaultHandlerRegistry(CodergenHandler{Backend: usageBackend{}}),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -602,7 +602,7 @@ func TestRun_BudgetCapExceeded(t *testing.T) {
 	result, err := Run(RunConfig{
 		Graph:           g,
 		LogsRoot:        t.TempDir(),
-		Registry:        DefaultHandlerRegistry(usageBackend{}),
+		Registry:        DefaultHandlerRegistry(CodergenHandler{Backend: usageBackend{}}),
 		MaxBudgetTokens: 7000,
 	})
 	if err != nil {
@@ -645,7 +645,7 @@ func TestRun_BudgetCapNotExceeded(t *testing.T) {
 	result, err := Run(RunConfig{
 		Graph:           g,
 		LogsRoot:        t.TempDir(),
-		Registry:        DefaultHandlerRegistry(usageBackend{}),
+		Registry:        DefaultHandlerRegistry(CodergenHandler{Backend: usageBackend{}}),
 		MaxBudgetTokens: 50000,
 	})
 	if err != nil {
@@ -794,7 +794,7 @@ func TestRun_MaxIterationsExceeded(t *testing.T) {
 	result, err := Run(RunConfig{
 		Graph:         g,
 		LogsRoot:      t.TempDir(),
-		Registry:      DefaultHandlerRegistry(nil),
+		Registry:      DefaultHandlerRegistry(CodergenHandler{}),
 		MaxIterations: 5,
 	})
 	if err != nil {

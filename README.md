@@ -19,15 +19,18 @@ This project implements all three layers of the Attractor spec:
 ```
 attractor/
 ├── cmd/
-│   ├── test-llm/           # Smoke test for the LLM client
+│   ├── run-retroquest/      # Pipeline runner for RetroQuest Returns
+│   ├── test-llm/            # Smoke test for the LLM client
 │   ├── test-agent/          # Smoke test for the agent loop
 │   └── test-pipeline/       # Smoke test for the pipeline runner
 ├── internal/
 │   ├── llm/                 # Layer 1: LLM client (types, client, errors, OpenRouter adapter)
 │   ├── tools/               # Layer 2: Tool implementations (read, write, edit, shell, truncation)
-│   ├── agent/               # Layer 2: Agent loop and system prompt
+│   ├── agent/               # Layer 2: Agent loop, system prompt, conversation compression
 │   ├── dot/                 # Layer 3: DOT lexer, parser, and graph model
-│   └── pipeline/            # Layer 3: Execution engine, handlers, context, checkpoint, validation
+│   ├── pipeline/            # Layer 3: Execution engine, handlers, context, checkpoint, validation
+│   └── logging/             # Structured logging setup (slog multi-handler)
+├── pipelines/               # DOT pipeline definitions (e.g., retroquest-returns-v2.dot)
 ├── go.mod
 └── README.md
 ```
@@ -106,8 +109,26 @@ Key concepts:
 - **Goal gates:** Nodes with `goal_gate=true` must succeed before the pipeline can exit
 - **Edge conditions:** Edges can have conditions like `condition="outcome=success"` to control routing
 - **Retry:** Nodes support `max_retries` with exponential backoff
+- **Build gates:** Nodes can specify `check_cmd="go build ./..."` to run a compilation check after each stage. If the check fails, the agent is re-invoked with the error output up to `check_max_retries` times (default 3)
 - **Usage tracking:** Each codergen stage writes a `usage.json` with token counts, and the pipeline aggregates totals in `RunResult`
 - **Budget cap:** Set `MaxBudgetTokens` on `RunConfig` to halt the pipeline if cumulative token usage exceeds a threshold
+
+## Running a Pipeline
+
+The `run-retroquest` runner demonstrates all pipeline features:
+
+```bash
+# Real run with Opus (requires OPENROUTER_API_KEY in .env and Docker)
+go run ./cmd/run-retroquest/
+
+# Simulated run (no API key or Docker needed -- tests pipeline structure and logging)
+go run ./cmd/run-retroquest/ --simulate
+
+# Cheap test run with a different model + zero data retention
+go run ./cmd/run-retroquest/ --model-override google/gemini-2.5-flash --zdr
+```
+
+The runner performs a pre-flight checklist (workdir, API key, Docker, model validation against OpenRouter's API, budget sanity) before execution begins.
 
 ## Design Decisions
 
@@ -118,6 +139,9 @@ Key concepts:
 | Shell Security | Docker | Commands run in an isolated container, not on the host machine |
 | DOT Parser | Hand-rolled | Full control over the spec's strict subset, custom attribute types, and error messages |
 | Testing | Table-driven + go-cmp | Consistent patterns, readable diffs, easy to extend |
+| Build Gates | `check_cmd` attribute | Compiler-enforced correctness between stages; catches cross-file inconsistencies early |
+| Contract-First Design | Interface files from design stage | Downstream stages implement against shared Go interfaces, enforced by `go build` gates |
+| Structured Logging | `log/slog` multi-handler | Always-on INFO to terminal, DEBUG to JSON file; no toggle flag |
 
 ## Spec Reference
 
