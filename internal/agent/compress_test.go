@@ -252,7 +252,7 @@ func TestCompressHistory_DoesNotMutateOriginal(t *testing.T) {
 
 func TestCompressHistory_SystemAndUserPreserved(t *testing.T) {
 	sysMsg := llm.SystemMessage("You are a coding agent.")
-	userMsg := llm.UserMessage("Build RetroQuest Returns.")
+	userMsg := llm.UserMessage("Build the web application.")
 
 	conversation := []llm.Message{
 		sysMsg, userMsg,
@@ -279,7 +279,7 @@ func TestCompressHistory_SystemAndUserPreserved(t *testing.T) {
 	if diff := cmp.Diff(llm.RoleUser, result[1].Role); diff != "" {
 		t.Errorf("user message role: %s", diff)
 	}
-	if diff := cmp.Diff("Build RetroQuest Returns.", result[1].Text()); diff != "" {
+	if diff := cmp.Diff("Build the web application.", result[1].Text()); diff != "" {
 		t.Errorf("user message content: %s", diff)
 	}
 }

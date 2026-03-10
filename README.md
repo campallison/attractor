@@ -19,7 +19,7 @@ This project implements all three layers of the Attractor spec:
 ```
 attractor/
 ├── cmd/
-│   ├── run-retroquest/      # Pipeline runner for RetroQuest Returns
+│   ├── run-pipeline/        # Reference pipeline runner (pre-flight, execution, reporting)
 │   ├── test-llm/            # Smoke test for the LLM client
 │   ├── test-agent/          # Smoke test for the agent loop
 │   └── test-pipeline/       # Smoke test for the pipeline runner
@@ -30,7 +30,7 @@ attractor/
 │   ├── dot/                 # Layer 3: DOT lexer, parser, and graph model
 │   ├── pipeline/            # Layer 3: Execution engine, handlers, context, checkpoint, validation
 │   └── logging/             # Structured logging setup (slog multi-handler)
-├── pipelines/               # DOT pipeline definitions (e.g., retroquest-returns-v2.dot)
+├── pipelines/               # DOT pipeline definitions
 ├── go.mod
 └── README.md
 ```
@@ -115,17 +115,17 @@ Key concepts:
 
 ## Running a Pipeline
 
-The `run-retroquest` runner demonstrates all pipeline features:
+The `run-pipeline` runner demonstrates all pipeline features:
 
 ```bash
-# Real run with Opus (requires OPENROUTER_API_KEY in .env and Docker)
-go run ./cmd/run-retroquest/
+# Real run (requires OPENROUTER_API_KEY in .env and Docker)
+go run ./cmd/run-pipeline/ -pipeline pipelines/my-pipeline.dot -workdir /path/to/workdir
 
 # Simulated run (no API key or Docker needed -- tests pipeline structure and logging)
-go run ./cmd/run-retroquest/ --simulate
+go run ./cmd/run-pipeline/ -pipeline pipelines/my-pipeline.dot --simulate
 
 # Cheap test run with a different model + zero data retention
-go run ./cmd/run-retroquest/ --model-override google/gemini-2.5-flash --zdr
+go run ./cmd/run-pipeline/ -pipeline pipelines/my-pipeline.dot --model-override google/gemini-2.5-flash --zdr
 ```
 
 The runner performs a pre-flight checklist (workdir, API key, Docker, model validation against OpenRouter's API, budget sanity) before execution begins.

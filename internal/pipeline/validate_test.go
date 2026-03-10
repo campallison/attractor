@@ -452,11 +452,11 @@ func projectRoot() string {
 	return filepath.Join(filepath.Dir(thisFile), "..", "..")
 }
 
-func TestValidate_RetroQuestV1_NoErrors(t *testing.T) {
+func TestValidate_ExamplePipelineV1_NoErrors(t *testing.T) {
 	dotPath := filepath.Join(projectRoot(), "pipelines", "retroquest-returns.dot")
 	src, err := os.ReadFile(dotPath)
 	if err != nil {
-		t.Skipf("skipping: cannot read %s: %v", dotPath, err)
+		t.Skipf("skipping: pipeline file not found: %v", err)
 	}
 	g, err := dot.Parse(string(src))
 	if err != nil {
@@ -467,15 +467,15 @@ func TestValidate_RetroQuestV1_NoErrors(t *testing.T) {
 		t.Logf("[%s] %s", d.Severity, d)
 	}
 	if HasErrors(diags) {
-		t.Fatal("retroquest-returns.dot has ERROR-severity diagnostics")
+		t.Fatal("pipeline has ERROR-severity diagnostics")
 	}
 }
 
-func TestValidate_RetroQuestV2_NoErrors(t *testing.T) {
+func TestValidate_ExamplePipelineV2_NoErrors(t *testing.T) {
 	dotPath := filepath.Join(projectRoot(), "pipelines", "retroquest-returns-v2.dot")
 	src, err := os.ReadFile(dotPath)
 	if err != nil {
-		t.Skipf("skipping: cannot read %s: %v", dotPath, err)
+		t.Skipf("skipping: pipeline file not found: %v", err)
 	}
 	g, err := dot.Parse(string(src))
 	if err != nil {
@@ -486,15 +486,15 @@ func TestValidate_RetroQuestV2_NoErrors(t *testing.T) {
 		t.Logf("[%s] %s", d.Severity, d)
 	}
 	if HasErrors(diags) {
-		t.Fatal("retroquest-returns-v2.dot has ERROR-severity diagnostics")
+		t.Fatal("pipeline has ERROR-severity diagnostics")
 	}
 }
 
-func TestValidate_RetroQuestV2_ExpectedWarnings(t *testing.T) {
+func TestValidate_ExamplePipelineV2_ExpectedWarnings(t *testing.T) {
 	dotPath := filepath.Join(projectRoot(), "pipelines", "retroquest-returns-v2.dot")
 	src, err := os.ReadFile(dotPath)
 	if err != nil {
-		t.Skipf("skipping: cannot read %s: %v", dotPath, err)
+		t.Skipf("skipping: pipeline file not found: %v", err)
 	}
 	g, err := dot.Parse(string(src))
 	if err != nil {
@@ -504,11 +504,11 @@ func TestValidate_RetroQuestV2_ExpectedWarnings(t *testing.T) {
 
 	noRecovery := findAllDiags(diags, "no_fail_recovery")
 	if len(noRecovery) == 0 {
-		t.Error("expected at least one no_fail_recovery warning (v2 is a linear pipeline)")
+		t.Error("expected at least one no_fail_recovery warning (linear pipeline)")
 	}
 
 	linearInfo := findDiag(diags, "linear_no_conditions")
 	if linearInfo == nil {
-		t.Error("expected linear_no_conditions info (v2 has no conditional edges)")
+		t.Error("expected linear_no_conditions info (pipeline has no conditional edges)")
 	}
 }

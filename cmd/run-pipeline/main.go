@@ -1,9 +1,9 @@
-// Command run-retroquest executes the RetroQuest Returns pipeline.
+// Command run-pipeline executes an Attractor pipeline from a DOT file.
 //
-// It parses the DOT pipeline file, validates it, and runs it with a real LLM
-// backend to build the RetroQuest Returns application end-to-end.
+// It parses the DOT pipeline file, validates it, runs pre-flight checks,
+// and executes it with a real LLM backend (or a simulated one for testing).
 //
-// Usage: go run ./cmd/run-retroquest [-budget TOKENS] [-pipeline FILE] [-docker-image IMAGE] [-simulate]
+// Usage: go run ./cmd/run-pipeline [-pipeline FILE] [-workdir DIR] [-budget TOKENS] [-simulate]
 //
 // Requires OPENROUTER_API_KEY in .env or environment (not needed with -simulate).
 package main
@@ -51,7 +51,7 @@ func main() {
 
 	loadEnv()
 
-	fmt.Println("=== RetroQuest Returns Pipeline ===")
+	fmt.Println("=== Attractor Pipeline Runner ===")
 	fmt.Println()
 
 	// 1. Load and parse pipeline

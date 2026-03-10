@@ -29,7 +29,7 @@ graph TB
     end
 
     subgraph entrypoints [Entry Points]
-        runRetroquest["cmd/run-retroquest"]
+        runPipeline["cmd/run-pipeline"]
         testLLM["cmd/test-llm"]
         testAgent["cmd/test-agent"]
         testPipeline["cmd/test-pipeline"]
@@ -40,11 +40,11 @@ graph TB
     toolsPkg --> agentPkg
     agentPkg --> pipelinePkg
 
-    llmPkg --> runRetroquest
-    pipelinePkg --> runRetroquest
-    dotPkg --> runRetroquest
-    loggingPkg --> runRetroquest
-    toolsPkg --> runRetroquest
+    llmPkg --> runPipeline
+    pipelinePkg --> runPipeline
+    dotPkg --> runPipeline
+    loggingPkg --> runPipeline
+    toolsPkg --> runPipeline
 
     llmPkg --> testLLM
     llmPkg --> testAgent
@@ -76,7 +76,7 @@ graph LR
     dot --> pipeline
 ```
 
-Key property: `internal/dot` depends on nothing internal. `internal/pipeline` depends on `internal/dot` (for graph types) and `internal/agent` (for the codergen backend adapter). `internal/agent` depends on `internal/llm` and `internal/tools`. `internal/logging` depends on nothing internal and is used only by `cmd/run-retroquest`. This forms a clean DAG with no risk of circular imports.
+Key property: `internal/dot` depends on nothing internal. `internal/pipeline` depends on `internal/dot` (for graph types) and `internal/agent` (for the codergen backend adapter). `internal/agent` depends on `internal/llm` and `internal/tools`. `internal/logging` depends on nothing internal and is used only by the runner entry point. This forms a clean DAG with no risk of circular imports.
 
 ---
 
@@ -727,7 +727,7 @@ Several defense-in-depth measures have been added beyond the basic implementatio
 | Pipeline engine | Agent exhaustion detection: `ErrRoundLimitReached` prevents silent failures | `agent/agent.go` |
 | Pipeline engine | Budget cap with 50%/75% threshold warnings | `pipeline/engine.go` |
 | Pipeline engine | Checkpoint warnings: save errors surfaced via `RunResult.Warnings` | `pipeline/engine.go` |
-| Runner | Pre-flight checklist: validates workdir, API key, Docker, model IDs, budget | `cmd/run-retroquest/main.go` |
+| Runner | Pre-flight checklist: validates workdir, API key, Docker, model IDs, budget | `cmd/run-pipeline/main.go` |
 | DOT parser | Recursion depth limit: max 50 nested subgraphs prevents stack overflow | `dot/parser.go` |
 
 ---
@@ -752,9 +752,9 @@ Key log events across the codebase:
 
 ---
 
-## Runner (`cmd/run-retroquest`)
+## Runner (`cmd/run-pipeline`)
 
-The runner is the entry point for executing the RetroQuest Returns pipeline. It orchestrates the full lifecycle:
+The runner is a reference entry point that demonstrates how to execute an Attractor pipeline end-to-end. It orchestrates the full lifecycle:
 
 1. **Parse** the DOT pipeline file
 2. **Validate** the graph against lint rules
@@ -808,4 +808,4 @@ All tests follow consistent patterns:
 - **`SimulatedBackend`** for pipeline engine tests without real LLM calls
 - **`failingBackend`** and **`exhaustedBackend`** for testing error paths through the codergen handler
 - **`buildGateBackend`** with mock `CheckRunner` for testing build gate retry logic
-- **Regression tests** that parse and validate actual pipeline DOT files (`retroquest-returns.dot`, `retroquest-returns-v2.dot`)
+- **Regression tests** that parse and validate the example pipeline DOT files in `pipelines/`
