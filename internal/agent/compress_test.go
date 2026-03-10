@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/campallison/attractor/internal/llm"
@@ -21,6 +22,11 @@ func makeToolCallMsg(calls ...llm.ToolCall) llm.Message {
 // makeToolResultMsg builds a tool result message with the given content.
 func makeToolResultMsg(callID, content string) llm.Message {
 	return llm.ToolResultMessage(callID, content, false)
+}
+
+// makeToolResultErrorMsg builds a tool result message marked as an error.
+func makeToolResultErrorMsg(callID, content string) llm.Message {
+	return llm.ToolResultMessage(callID, content, true)
 }
 
 // argsJSON is a helper that marshals a map to json.RawMessage.
@@ -81,50 +87,72 @@ func TestCompressHistory(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		conversation   []llm.Message
-		keepFullRounds int
-		wantSameLength bool
-		wantUnchanged  bool // entire output should be identical to input
+		name            string
+		conversation    []llm.Message
+		keepFullRounds  int
+		wantSameLength  bool
+		wantUnchanged   bool // entire output should be identical to input
 		checkCompressed map[string]string // callID -> expected compressed content
 		checkFull       []string          // callIDs that should retain original content
 	}{
 		{
-			name:           "fewer rounds than threshold returns unchanged",
-			conversation:   fullConversation[:6], // sys + user + 2 rounds
+			// No old rounds, but write_file result in round 1 still gets
+			// write-and-forget compression.
+			name:           "fewer rounds than threshold compresses write_file only",
+			conversation:   fullConversation[:6], // sys + user + 2 rounds (read + write)
 			keepFullRounds: 4,
 			wantSameLength: true,
-			wantUnchanged:  true,
+			checkCompressed: map[string]string{
+				"call_1": "[previously wrote: main.go]",
+			},
+			checkFull: []string{"call_0"},
 		},
 		{
-			name:           "exactly at threshold returns unchanged",
+			// 4 rounds <= keepFullRounds(4), but write and edit results
+			// are still compressed via write-and-forget.
+			name:           "at threshold compresses write and edit via write-and-forget",
 			conversation:   fullConversation[:10], // sys + user + 4 rounds
 			keepFullRounds: 4,
 			wantSameLength: true,
-			wantUnchanged:  true,
+			checkCompressed: map[string]string{
+				"call_1": "[previously wrote: main.go]",
+				"call_3": "[previously edited: main.go]",
+			},
+			checkFull: []string{"call_0", "call_2"},
 		},
 		{
-			name:           "one round over threshold compresses oldest",
+			// Round 0 is in the old zone; rounds 1-4 in keep window.
+			// Round 0 read_file gets skeleton summary (short content).
+			// Round 1 write_file gets write-and-forget.
+			// Round 3 edit_file gets write-and-forget.
+			name:           "one round over threshold compresses oldest plus write-forget",
 			conversation:   fullConversation[:12], // sys + user + 5 rounds
 			keepFullRounds: 4,
 			wantSameLength: true,
 			checkCompressed: map[string]string{
-				"call_0": "[previously read: go.mod]",
+				"call_0": "[previously read: go.mod]\nmodule example.com/app\n\ngo 1.22",
+				"call_1": "[previously wrote: main.go]",
+				"call_3": "[previously edited: main.go]",
 			},
-			checkFull: []string{"call_1", "call_2", "call_3", "call_4"},
+			checkFull: []string{"call_2", "call_4"},
 		},
 		{
-			name:           "keep 2 compresses first 4 of 6 rounds",
+			// Rounds 0-3 in old zone, rounds 4-5 in keep window.
+			// write/edit are compressed regardless of zone.
+			// shell "Build succeeded" is short (< 300 chars) so preserved.
+			// read_file go.mod content is short, gets inline summary.
+			name:           "keep 2 compresses first 4 rounds smartly",
 			conversation:   fullConversation,
 			keepFullRounds: 2,
 			wantSameLength: true,
 			checkCompressed: map[string]string{
-				"call_0": "[previously read: go.mod]",
+				"call_0": "[previously read: go.mod]\nmodule example.com/app\n\ngo 1.22",
 				"call_1": "[previously wrote: main.go]",
-				"call_2": "[previously ran: go build ./...]",
 				"call_3": "[previously edited: main.go]",
 			},
-			checkFull: []string{"call_4", "call_5"},
+			// call_2 (shell, short output) stays full even in old zone;
+			// call_4 and call_5 are in keep window.
+			checkFull: []string{"call_2", "call_4", "call_5"},
 		},
 		{
 			name:           "keep 0 compresses everything",
@@ -132,13 +160,14 @@ func TestCompressHistory(t *testing.T) {
 			keepFullRounds: 0,
 			wantSameLength: true,
 			checkCompressed: map[string]string{
-				"call_0": "[previously read: go.mod]",
+				"call_0": "[previously read: go.mod]\nmodule example.com/app\n\ngo 1.22",
 				"call_1": "[previously wrote: main.go]",
-				"call_2": "[previously ran: go build ./...]",
 				"call_3": "[previously edited: main.go]",
 				"call_4": "[previously searched: grep TODO]",
 				"call_5": "[previously searched: glob *.go]",
 			},
+			// call_2 shell output "Build succeeded" is short, preserved.
+			checkFull: []string{"call_2"},
 		},
 		{
 			name:           "empty conversation",
@@ -167,9 +196,7 @@ func TestCompressHistory(t *testing.T) {
 			}
 
 			if tc.wantUnchanged {
-				// When unchanged, the function returns the original slice.
 				if len(tc.conversation) > 0 && &result[0] != &tc.conversation[0] {
-					// It returned a copy; verify contents are identical.
 					for i := range tc.conversation {
 						if diff := cmp.Diff(tc.conversation[i].Role, result[i].Role); diff != "" {
 							t.Errorf("msg[%d] role mismatch: %s", i, diff)
@@ -204,13 +231,232 @@ func TestCompressHistory(t *testing.T) {
 						if _, isCompressed := tc.checkCompressed[fullID]; isCompressed {
 							t.Errorf("expected %s to be full but it was compressed", fullID)
 						}
-						if len(content) < 5 {
+						if len(content) < 2 {
 							t.Errorf("expected %s to have substantial content, got %q", fullID, content)
 						}
 					}
 				}
 			}
 		})
+	}
+}
+
+func TestCompressHistory_WriteForgetInKeepWindow(t *testing.T) {
+	sysMsg := llm.SystemMessage("system")
+	userMsg := llm.UserMessage("prompt")
+
+	// 2 rounds, both in keep window (keepFullRounds=4).
+	// Round 0: write_file (should be compressed via write-and-forget).
+	// Round 1: read_file (should be kept full).
+	conversation := []llm.Message{
+		sysMsg, userMsg,
+		makeToolCallMsg(llm.ToolCall{
+			ID: "w0", Name: "write_file",
+			Arguments: argsJSON(map[string]any{"path": "handler.go", "content": "package handlers\n\nfunc Handle() {}"}),
+		}),
+		makeToolResultMsg("w0", "File written: handler.go (3 lines)"),
+		makeToolCallMsg(llm.ToolCall{
+			ID: "r0", Name: "read_file",
+			Arguments: argsJSON(map[string]any{"path": "go.mod"}),
+		}),
+		makeToolResultMsg("r0", "module example.com"),
+	}
+
+	result := compressHistory(conversation, 4)
+
+	// write_file result should be compressed even though it's in keep window.
+	w0Content := result[3].Parts[0].ToolResult.Content
+	if diff := cmp.Diff("[previously wrote: handler.go]", w0Content); diff != "" {
+		t.Errorf("write_file not compressed via write-and-forget (-want +got):\n%s", diff)
+	}
+
+	// read_file result should remain full.
+	r0Content := result[5].Parts[0].ToolResult.Content
+	if diff := cmp.Diff("module example.com", r0Content); diff != "" {
+		t.Errorf("read_file should be full (-want +got):\n%s", diff)
+	}
+}
+
+func TestCompressHistory_WriteForgetPreservesErrors(t *testing.T) {
+	sysMsg := llm.SystemMessage("system")
+	userMsg := llm.UserMessage("prompt")
+
+	conversation := []llm.Message{
+		sysMsg, userMsg,
+		makeToolCallMsg(llm.ToolCall{
+			ID: "w0", Name: "write_file",
+			Arguments: argsJSON(map[string]any{"path": "bad.go", "content": "x"}),
+		}),
+		makeToolResultErrorMsg("w0", "Tool error (write_file): permission denied"),
+		makeToolCallMsg(llm.ToolCall{
+			ID: "r0", Name: "read_file",
+			Arguments: argsJSON(map[string]any{"path": "go.mod"}),
+		}),
+		makeToolResultMsg("r0", "module example.com"),
+	}
+
+	result := compressHistory(conversation, 4)
+
+	// Error write_file results should NOT be compressed — the model needs
+	// to see the error to adjust its approach.
+	w0 := result[3].Parts[0].ToolResult
+	if diff := cmp.Diff("Tool error (write_file): permission denied", w0.Content); diff != "" {
+		t.Errorf("error write_file should be preserved (-want +got):\n%s", diff)
+	}
+	if !w0.IsError {
+		t.Error("expected IsError=true for failed write_file")
+	}
+}
+
+func TestCompressHistory_ShortShellPreservedInOldZone(t *testing.T) {
+	sysMsg := llm.SystemMessage("system")
+	userMsg := llm.UserMessage("prompt")
+
+	conversation := []llm.Message{
+		sysMsg, userMsg,
+		// Round 0: short shell output
+		makeToolCallMsg(llm.ToolCall{
+			ID: "s0", Name: "shell",
+			Arguments: argsJSON(map[string]any{"command": "go build ./..."}),
+		}),
+		makeToolResultMsg("s0", ""),
+		// Round 1: keep window
+		makeToolCallMsg(llm.ToolCall{
+			ID: "r1", Name: "read_file",
+			Arguments: argsJSON(map[string]any{"path": "main.go"}),
+		}),
+		makeToolResultMsg("r1", "package main"),
+	}
+
+	result := compressHistory(conversation, 1) // Round 0 in old zone
+
+	// Short shell result should be preserved verbatim even in old zone.
+	s0Content := result[3].Parts[0].ToolResult.Content
+	if diff := cmp.Diff("", s0Content); diff != "" {
+		t.Errorf("short shell should be preserved (-want +got):\n%s", diff)
+	}
+}
+
+func TestCompressHistory_LongShellCompressedInOldZone(t *testing.T) {
+	sysMsg := llm.SystemMessage("system")
+	userMsg := llm.UserMessage("prompt")
+
+	longOutput := strings.Repeat("line of output\n", 30) // > 300 chars
+	conversation := []llm.Message{
+		sysMsg, userMsg,
+		// Round 0: long shell output
+		makeToolCallMsg(llm.ToolCall{
+			ID: "s0", Name: "shell",
+			Arguments: argsJSON(map[string]any{"command": "go test -v ./..."}),
+		}),
+		makeToolResultMsg("s0", longOutput),
+		// Round 1: keep window
+		makeToolCallMsg(llm.ToolCall{
+			ID: "r1", Name: "read_file",
+			Arguments: argsJSON(map[string]any{"path": "main.go"}),
+		}),
+		makeToolResultMsg("r1", "package main"),
+	}
+
+	result := compressHistory(conversation, 1) // Round 0 in old zone
+
+	// Long shell result should be compressed to the summary.
+	s0Content := result[3].Parts[0].ToolResult.Content
+	if diff := cmp.Diff("[previously ran: go test -v ./...]", s0Content); diff != "" {
+		t.Errorf("long shell should be compressed (-want +got):\n%s", diff)
+	}
+}
+
+func TestCompressHistory_ReadFileSkeletonForLargeFiles(t *testing.T) {
+	sysMsg := llm.SystemMessage("system")
+	userMsg := llm.UserMessage("prompt")
+
+	// Build a file content that exceeds readFileSkeletonThreshold (500 chars).
+	var lines []string
+	lines = append(lines, "package models", "", "import \"time\"")
+	for i := 0; i < 30; i++ {
+		lines = append(lines, "// filler line for testing compression")
+	}
+	lines = append(lines, "type User struct {", "\tID int", "}")
+	largeContent := strings.Join(lines, "\n")
+
+	conversation := []llm.Message{
+		sysMsg, userMsg,
+		makeToolCallMsg(llm.ToolCall{
+			ID: "r0", Name: "read_file",
+			Arguments: argsJSON(map[string]any{"path": "internal/models/user.go"}),
+		}),
+		makeToolResultMsg("r0", largeContent),
+		// Round 1: keep window
+		makeToolCallMsg(llm.ToolCall{
+			ID: "s1", Name: "shell",
+			Arguments: argsJSON(map[string]any{"command": "go build"}),
+		}),
+		makeToolResultMsg("s1", "ok"),
+	}
+
+	result := compressHistory(conversation, 1) // Round 0 in old zone
+
+	r0Content := result[3].Parts[0].ToolResult.Content
+
+	// Should start with the skeleton header.
+	if !strings.HasPrefix(r0Content, "[previously read: internal/models/user.go") {
+		t.Errorf("expected skeleton header, got: %s", r0Content[:80])
+	}
+
+	// Should contain the head lines (package, blank, import).
+	if !strings.Contains(r0Content, "package models") {
+		t.Error("skeleton should contain head line: package models")
+	}
+	if !strings.Contains(r0Content, `import "time"`) {
+		t.Error("skeleton should contain head line: import")
+	}
+
+	// Should contain the tail lines.
+	if !strings.Contains(r0Content, "type User struct {") {
+		t.Error("skeleton should contain tail line: type User struct")
+	}
+	if !strings.Contains(r0Content, "\tID int") {
+		t.Error("skeleton should contain tail line: ID int")
+	}
+
+	// Should contain the omitted marker.
+	if !strings.Contains(r0Content, "lines omitted") {
+		t.Error("skeleton should contain '... N lines omitted ...'")
+	}
+
+	// Should NOT contain the filler lines.
+	if strings.Count(r0Content, "filler line") > 0 {
+		t.Error("skeleton should not contain filler lines from middle of file")
+	}
+}
+
+func TestCompressHistory_ReadFileSmallContentPreservedInOldZone(t *testing.T) {
+	sysMsg := llm.SystemMessage("system")
+	userMsg := llm.UserMessage("prompt")
+
+	shortContent := "package main\n\nfunc main() {}"
+	conversation := []llm.Message{
+		sysMsg, userMsg,
+		makeToolCallMsg(llm.ToolCall{
+			ID: "r0", Name: "read_file",
+			Arguments: argsJSON(map[string]any{"path": "main.go"}),
+		}),
+		makeToolResultMsg("r0", shortContent),
+		makeToolCallMsg(llm.ToolCall{
+			ID: "s1", Name: "shell",
+			Arguments: argsJSON(map[string]any{"command": "go build"}),
+		}),
+		makeToolResultMsg("s1", "ok"),
+	}
+
+	result := compressHistory(conversation, 1)
+
+	// Short read_file content should be included inline with the header.
+	r0Content := result[3].Parts[0].ToolResult.Content
+	want := "[previously read: main.go]\npackage main\n\nfunc main() {}"
+	if diff := cmp.Diff(want, r0Content); diff != "" {
+		t.Errorf("short read_file in old zone (-want +got):\n%s", diff)
 	}
 }
 
@@ -368,11 +614,83 @@ func TestSummarizeToolCall_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestSummarizeReadFile(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		content string
+		checks  func(t *testing.T, got string)
+	}{
+		{
+			name:    "short content preserved inline",
+			path:    "main.go",
+			content: "package main\n\nfunc main() {}",
+			checks: func(t *testing.T, got string) {
+				want := "[previously read: main.go]\npackage main\n\nfunc main() {}"
+				if diff := cmp.Diff(want, got); diff != "" {
+					t.Errorf("(-want +got):\n%s", diff)
+				}
+			},
+		},
+		{
+			name:    "large content gets skeleton",
+			path:    "big.go",
+			content: buildLargeFile(40),
+			checks: func(t *testing.T, got string) {
+				if !strings.HasPrefix(got, "[previously read: big.go (") {
+					t.Errorf("expected skeleton header, got prefix: %q", got[:50])
+				}
+				if !strings.Contains(got, "package big") {
+					t.Error("missing head line: package big")
+				}
+				if !strings.Contains(got, "lines omitted") {
+					t.Error("missing omitted marker")
+				}
+				if !strings.Contains(got, "func Last()") {
+					t.Error("missing tail line")
+				}
+			},
+		},
+		{
+			name:    "missing path falls back gracefully",
+			path:    "",
+			content: "some content",
+			checks: func(t *testing.T, got string) {
+				if !strings.Contains(got, "unknown file") {
+					t.Errorf("expected 'unknown file' in summary, got: %s", got)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			args := argsJSON(map[string]any{"path": tc.path})
+			if tc.path == "" {
+				args = argsJSON(map[string]any{})
+			}
+			got := summarizeReadFile(args, tc.content)
+			tc.checks(t, got)
+		})
+	}
+}
+
+// buildLargeFile creates a synthetic Go file with N filler lines.
+func buildLargeFile(fillerLines int) string {
+	var lines []string
+	lines = append(lines, "package big", "", "import \"fmt\"")
+	for i := 0; i < fillerLines; i++ {
+		lines = append(lines, "// filler line for testing")
+	}
+	lines = append(lines, "func Last() {", "\tfmt.Println(\"end\")", "}")
+	return strings.Join(lines, "\n")
+}
+
 func TestCompressHistory_MultipleToolCallsPerRound(t *testing.T) {
 	sysMsg := llm.SystemMessage("system")
 	userMsg := llm.UserMessage("prompt")
 
-	// Round 0: assistant makes 2 tool calls at once
+	// Round 0: assistant makes 2 read_file calls at once.
 	round0Assistant := makeToolCallMsg(
 		llm.ToolCall{
 			ID: "c0a", Name: "read_file",
@@ -386,7 +704,7 @@ func TestCompressHistory_MultipleToolCallsPerRound(t *testing.T) {
 	round0ResultA := makeToolResultMsg("c0a", "package a\n// lots of code here")
 	round0ResultB := makeToolResultMsg("c0b", "package b\n// lots of code here")
 
-	// Round 1: single tool call (this one stays full with keepFullRounds=1)
+	// Round 1: single tool call (stays full with keepFullRounds=1).
 	round1Assistant := makeToolCallMsg(llm.ToolCall{
 		ID: "c1", Name: "shell",
 		Arguments: argsJSON(map[string]any{"command": "go build"}),
@@ -401,19 +719,44 @@ func TestCompressHistory_MultipleToolCallsPerRound(t *testing.T) {
 
 	result := compressHistory(conversation, 1)
 
-	// Both round-0 tool results should be compressed
+	// Both round-0 read_file results should be compressed with inline content (short files).
 	r0a := result[3]
-	if diff := cmp.Diff("[previously read: a.go]", r0a.Parts[0].ToolResult.Content); diff != "" {
-		t.Errorf("c0a not compressed (-want +got):\n%s", diff)
+	wantA := "[previously read: a.go]\npackage a\n// lots of code here"
+	if diff := cmp.Diff(wantA, r0a.Parts[0].ToolResult.Content); diff != "" {
+		t.Errorf("c0a not compressed correctly (-want +got):\n%s", diff)
 	}
 	r0b := result[4]
-	if diff := cmp.Diff("[previously read: b.go]", r0b.Parts[0].ToolResult.Content); diff != "" {
-		t.Errorf("c0b not compressed (-want +got):\n%s", diff)
+	wantB := "[previously read: b.go]\npackage b\n// lots of code here"
+	if diff := cmp.Diff(wantB, r0b.Parts[0].ToolResult.Content); diff != "" {
+		t.Errorf("c0b not compressed correctly (-want +got):\n%s", diff)
 	}
 
-	// Round 1 should remain full
+	// Round 1 should remain full.
 	r1 := result[6]
 	if diff := cmp.Diff("Build ok", r1.Parts[0].ToolResult.Content); diff != "" {
 		t.Errorf("c1 should be full (-want +got):\n%s", diff)
+	}
+}
+
+func TestCompressHistory_NoRoundsWithWriteForgetOnly(t *testing.T) {
+	sysMsg := llm.SystemMessage("system")
+	userMsg := llm.UserMessage("prompt")
+
+	// Single round with only a write_file call.
+	// Even with keepFullRounds=10, write-and-forget should trigger.
+	conversation := []llm.Message{
+		sysMsg, userMsg,
+		makeToolCallMsg(llm.ToolCall{
+			ID: "w0", Name: "write_file",
+			Arguments: argsJSON(map[string]any{"path": "out.go", "content": "x"}),
+		}),
+		makeToolResultMsg("w0", "File written: out.go (1 line)"),
+	}
+
+	result := compressHistory(conversation, 10)
+
+	w0Content := result[3].Parts[0].ToolResult.Content
+	if diff := cmp.Diff("[previously wrote: out.go]", w0Content); diff != "" {
+		t.Errorf("single write_file should be compressed (-want +got):\n%s", diff)
 	}
 }
