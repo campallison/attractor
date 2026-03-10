@@ -221,6 +221,12 @@ func TestUsageAdd(t *testing.T) {
 			b:    Usage{InputTokens: 100, OutputTokens: 200, TotalTokens: 300},
 			want: Usage{InputTokens: 100, OutputTokens: 200, TotalTokens: 300},
 		},
+		{
+			name: "cache fields are summed",
+			a:    Usage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100, CacheReadTokens: 800, CacheCreationTokens: 200},
+			b:    Usage{InputTokens: 500, OutputTokens: 50, TotalTokens: 550, CacheReadTokens: 400, CacheCreationTokens: 0},
+			want: Usage{InputTokens: 1500, OutputTokens: 150, TotalTokens: 1650, CacheReadTokens: 1200, CacheCreationTokens: 200},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

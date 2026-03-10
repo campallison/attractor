@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 )
 
 const (
@@ -25,10 +26,17 @@ type orMessage struct {
 	ToolCalls  []orToolCall `json:"tool_calls,omitempty"`
 }
 
-// orContentPart is a single part inside a content array (for assistant messages with tool calls).
+// orCacheControl marks a content block as a prompt caching breakpoint
+// for Anthropic models routed through OpenRouter.
+type orCacheControl struct {
+	Type string `json:"type"` // "ephemeral"
+}
+
+// orContentPart is a single part inside a content array.
 type orContentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type         string          `json:"type"`
+	Text         string          `json:"text,omitempty"`
+	CacheControl *orCacheControl `json:"cache_control,omitempty"`
 }
 
 // orToolCall is a tool call as returned in an assistant message.
@@ -83,6 +91,10 @@ type orResponse struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
+		PromptTokensDetails *struct {
+			CachedTokens     int `json:"cached_tokens"`
+			CacheWriteTokens int `json:"cache_write_tokens"`
+		} `json:"prompt_tokens_details,omitempty"`
 	} `json:"usage"`
 }
 
@@ -91,8 +103,10 @@ type orResponse struct {
 // buildORRequest converts a unified Request into the OpenRouter wire format.
 // When zdr is true, the request includes provider preferences that enforce
 // Zero Data Retention routing on OpenRouter.
-func buildORRequest(req Request, zdr bool) (orRequest, error) {
-	messages, err := translateMessages(req.Messages)
+// When promptCaching is true and the model is an Anthropic model, system and
+// user messages are sent in content-array format with cache_control breakpoints.
+func buildORRequest(req Request, zdr, promptCaching bool) (orRequest, error) {
+	messages, err := translateMessages(req.Messages, promptCaching, req.Model)
 	if err != nil {
 		return orRequest{}, err
 	}
@@ -117,10 +131,13 @@ func buildORRequest(req Request, zdr bool) (orRequest, error) {
 }
 
 // translateMessages converts unified Messages to OpenRouter wire messages.
-func translateMessages(msgs []Message) ([]orMessage, error) {
+// When promptCaching is true and the model is an Anthropic model, system and
+// user messages use the content-array format with cache_control breakpoints.
+func translateMessages(msgs []Message, promptCaching bool, model string) ([]orMessage, error) {
+	cache := promptCaching && strings.HasPrefix(model, "anthropic/")
 	out := make([]orMessage, 0, len(msgs))
 	for _, m := range msgs {
-		wire, err := translateMessage(m)
+		wire, err := translateMessage(m, cache)
 		if err != nil {
 			return nil, err
 		}
@@ -133,12 +150,28 @@ func translateMessages(msgs []Message) ([]orMessage, error) {
 // An assistant message with both text and tool calls is represented as a single
 // message with the content field set to the text (may be empty) and tool_calls
 // carrying the call objects.
-func translateMessage(m Message) ([]orMessage, error) {
+// When cacheControl is true, system and user messages use the content-array
+// format with a cache_control breakpoint on the text block.
+func translateMessage(m Message, cacheControl bool) ([]orMessage, error) {
 	switch m.Role {
 	case RoleSystem:
+		if cacheControl {
+			return []orMessage{{Role: "system", Content: []orContentPart{{
+				Type:         "text",
+				Text:         m.Text(),
+				CacheControl: &orCacheControl{Type: "ephemeral"},
+			}}}}, nil
+		}
 		return []orMessage{{Role: "system", Content: m.Text()}}, nil
 
 	case RoleUser:
+		if cacheControl {
+			return []orMessage{{Role: "user", Content: []orContentPart{{
+				Type:         "text",
+				Text:         m.Text(),
+				CacheControl: &orCacheControl{Type: "ephemeral"},
+			}}}}, nil
+		}
 		return []orMessage{{Role: "user", Content: m.Text()}}, nil
 
 	case RoleAssistant:
@@ -245,6 +278,16 @@ func parseORResponse(body []byte, requestedModel string) (Response, error) {
 		model = requestedModel
 	}
 
+	usage := Usage{
+		InputTokens:  raw.Usage.PromptTokens,
+		OutputTokens: raw.Usage.CompletionTokens,
+		TotalTokens:  raw.Usage.TotalTokens,
+	}
+	if d := raw.Usage.PromptTokensDetails; d != nil {
+		usage.CacheReadTokens = d.CachedTokens
+		usage.CacheCreationTokens = d.CacheWriteTokens
+	}
+
 	return Response{
 		ID:       raw.ID,
 		Model:    model,
@@ -254,11 +297,7 @@ func parseORResponse(body []byte, requestedModel string) (Response, error) {
 			Reason: mapFinishReason(choice.FinishReason),
 			Raw:    choice.FinishReason,
 		},
-		Usage: Usage{
-			InputTokens:  raw.Usage.PromptTokens,
-			OutputTokens: raw.Usage.CompletionTokens,
-			TotalTokens:  raw.Usage.TotalTokens,
-		},
+		Usage: usage,
 	}, nil
 }
 

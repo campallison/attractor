@@ -12,10 +12,11 @@ import (
 
 // Client is the entry point for making LLM requests. Currently backed by OpenRouter.
 type Client struct {
-	apiKey     string
-	baseURL    string
-	httpClient *http.Client
-	zdr        bool // enforce Zero Data Retention routing
+	apiKey        string
+	baseURL       string
+	httpClient    *http.Client
+	zdr           bool // enforce Zero Data Retention routing
+	promptCaching bool // enable prompt caching for supported providers
 }
 
 // ClientOption is a functional option for configuring a Client.
@@ -41,6 +42,16 @@ func WithHTTPClient(hc *http.Client) ClientOption {
 func WithZDR() ClientOption {
 	return func(c *Client) {
 		c.zdr = true
+	}
+}
+
+// WithPromptCaching enables prompt caching for supported providers. Currently
+// only Anthropic models via OpenRouter support this. System and user messages
+// are sent with cache_control breakpoints, allowing subsequent rounds in an
+// agent loop to read cached prompt tokens at ~10% of the normal input cost.
+func WithPromptCaching() ClientOption {
+	return func(c *Client) {
+		c.promptCaching = true
 	}
 }
 
@@ -84,7 +95,7 @@ func NewClient(apiKey string, opts ...ClientOption) (*Client, error) {
 // Complete sends a blocking chat completion request and returns the full response.
 // The context controls cancellation and deadline.
 func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
-	orReq, err := buildORRequest(req, c.zdr)
+	orReq, err := buildORRequest(req, c.zdr, c.promptCaching)
 	if err != nil {
 		return Response{}, err
 	}
@@ -104,13 +115,20 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 		return Response{}, err
 	}
 
-	slog.Info("llm.call",
+	logAttrs := []any{
 		"model", resp.Model,
 		"latency_ms", latency.Milliseconds(),
 		"tokens_in", resp.Usage.InputTokens,
 		"tokens_out", resp.Usage.OutputTokens,
 		"finish", resp.FinishReason.Raw,
-	)
+	}
+	if resp.Usage.CacheReadTokens > 0 || resp.Usage.CacheCreationTokens > 0 {
+		logAttrs = append(logAttrs,
+			"cache_read", resp.Usage.CacheReadTokens,
+			"cache_write", resp.Usage.CacheCreationTokens,
+		)
+	}
+	slog.Info("llm.call", logAttrs...)
 
 	return resp, nil
 }

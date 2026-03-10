@@ -126,7 +126,7 @@ func TestTranslateMessage(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := translateMessage(tt.msg)
+			got, err := translateMessage(tt.msg, false)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
@@ -163,6 +163,82 @@ func TestTranslateTools(t *testing.T) {
 
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("translateTools() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestTranslateMessages_CachingAnthropicModel(t *testing.T) {
+	msgs := []Message{
+		SystemMessage("You are a coding agent."),
+		UserMessage("Build me a web app."),
+		AssistantMessage("I'll start by reading the codebase."),
+	}
+
+	got, err := translateMessages(msgs, true, "anthropic/claude-opus-4.6")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(got) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(got))
+	}
+
+	// System and user messages should be content arrays with cache_control.
+	for i, label := range []string{"system", "user"} {
+		parts, ok := got[i].Content.([]orContentPart)
+		if !ok {
+			t.Fatalf("%s message: expected []orContentPart, got %T", label, got[i].Content)
+		}
+		if len(parts) != 1 {
+			t.Fatalf("%s message: expected 1 content part, got %d", label, len(parts))
+		}
+		if parts[0].CacheControl == nil {
+			t.Errorf("%s message: expected cache_control to be set", label)
+		} else if parts[0].CacheControl.Type != "ephemeral" {
+			t.Errorf("%s message: expected cache_control.type=\"ephemeral\", got %q", label, parts[0].CacheControl.Type)
+		}
+	}
+
+	// Assistant message should remain a plain string.
+	if _, ok := got[2].Content.(string); !ok {
+		t.Errorf("assistant message: expected string content, got %T", got[2].Content)
+	}
+}
+
+func TestTranslateMessages_CachingNonAnthropicModel(t *testing.T) {
+	msgs := []Message{
+		SystemMessage("You are a coding agent."),
+		UserMessage("Build me a web app."),
+	}
+
+	got, err := translateMessages(msgs, true, "google/gemini-2.5-flash")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Even with promptCaching=true, non-Anthropic models should use plain strings.
+	for i, label := range []string{"system", "user"} {
+		if _, ok := got[i].Content.(string); !ok {
+			t.Errorf("%s message: expected plain string content for non-Anthropic model, got %T", label, got[i].Content)
+		}
+	}
+}
+
+func TestTranslateMessages_CachingDisabled(t *testing.T) {
+	msgs := []Message{
+		SystemMessage("You are a coding agent."),
+		UserMessage("Build me a web app."),
+	}
+
+	got, err := translateMessages(msgs, false, "anthropic/claude-opus-4.6")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// With caching disabled, even Anthropic models should use plain strings.
+	for i, label := range []string{"system", "user"} {
+		if _, ok := got[i].Content.(string); !ok {
+			t.Errorf("%s message: expected plain string content when caching disabled, got %T", label, got[i].Content)
+		}
 	}
 }
 
@@ -262,6 +338,44 @@ func TestParseORResponse(t *testing.T) {
 				},
 				FinishReason: FinishReason{Reason: "stop", Raw: "stop"},
 				Usage:        Usage{InputTokens: 5, OutputTokens: 1, TotalTokens: 6},
+			},
+		},
+		{
+			name: "response with prompt cache stats",
+			body: `{
+				"id": "gen-cache",
+				"model": "anthropic/claude-opus-4.6",
+				"choices": [{
+					"message": {"role": "assistant", "content": "cached response"},
+					"finish_reason": "stop"
+				}],
+				"usage": {
+					"prompt_tokens": 5000,
+					"completion_tokens": 100,
+					"total_tokens": 5100,
+					"prompt_tokens_details": {
+						"cached_tokens": 4800,
+						"cache_write_tokens": 200
+					}
+				}
+			}`,
+			requestedModel: "anthropic/claude-opus-4.6",
+			want: Response{
+				ID:       "gen-cache",
+				Model:    "anthropic/claude-opus-4.6",
+				Provider: "openrouter",
+				Message: Message{
+					Role:  RoleAssistant,
+					Parts: []ContentPart{{Kind: KindText, Text: "cached response"}},
+				},
+				FinishReason: FinishReason{Reason: "stop", Raw: "stop"},
+				Usage: Usage{
+					InputTokens:        5000,
+					OutputTokens:       100,
+					TotalTokens:        5100,
+					CacheReadTokens:    4800,
+					CacheCreationTokens: 200,
+				},
 			},
 		},
 		{

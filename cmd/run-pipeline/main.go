@@ -44,6 +44,7 @@ func main() {
 	model := flag.String("model", defaultModel, "default LLM model")
 	modelOverride := flag.String("model-override", "", "override ALL stage models with this model (useful for cheap test runs)")
 	zdr := flag.Bool("zdr", false, "enforce Zero Data Retention routing on OpenRouter")
+	promptCache := flag.Bool("prompt-cache", false, "enable prompt caching for Anthropic models (reduces input token cost)")
 	dockerImage := flag.String("docker-image", defaultDockerImage, "Docker image for shell sandbox")
 	noDocker := flag.Bool("no-docker", false, "skip Docker container setup (shell commands will fail)")
 	simulate := flag.Bool("simulate", false, "use SimulatedBackend instead of real LLM (no API key or Docker needed)")
@@ -115,6 +116,9 @@ func main() {
 	if *zdr {
 		fmt.Println("    ZDR: enabled (Zero Data Retention)")
 	}
+	if *promptCache {
+		fmt.Println("    Prompt caching: enabled")
+	}
 	if *budgetTokens > 0 {
 		fmt.Printf("    Budget: %d tokens\n", *budgetTokens)
 	} else {
@@ -148,6 +152,9 @@ func main() {
 		var clientOpts []llm.ClientOption
 		if *zdr {
 			clientOpts = append(clientOpts, llm.WithZDR())
+		}
+		if *promptCache {
+			clientOpts = append(clientOpts, llm.WithPromptCaching())
 		}
 		client, err := llm.NewClientFromEnv(clientOpts...)
 		if err != nil {
@@ -245,6 +252,7 @@ func main() {
 		"model":           effectiveModel,
 		"model_override":  *modelOverride != "",
 		"zdr":             *zdr,
+		"prompt_cache":    *promptCache,
 		"budget_tokens":   *budgetTokens,
 	}
 	if data, err := json.MarshalIndent(summaryData, "", "  "); err == nil {

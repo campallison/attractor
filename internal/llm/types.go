@@ -155,14 +155,22 @@ type Usage struct {
 	InputTokens  int
 	OutputTokens int
 	TotalTokens  int
+
+	// Prompt caching statistics (Anthropic via OpenRouter).
+	// CacheReadTokens is the number of input tokens served from cache (discounted).
+	// CacheCreationTokens is the number of input tokens written to a new cache entry.
+	CacheReadTokens     int
+	CacheCreationTokens int
 }
 
 // Add returns the element-wise sum of two Usage values.
 func (u Usage) Add(other Usage) Usage {
 	return Usage{
-		InputTokens:  u.InputTokens + other.InputTokens,
-		OutputTokens: u.OutputTokens + other.OutputTokens,
-		TotalTokens:  u.TotalTokens + other.TotalTokens,
+		InputTokens:        u.InputTokens + other.InputTokens,
+		OutputTokens:       u.OutputTokens + other.OutputTokens,
+		TotalTokens:        u.TotalTokens + other.TotalTokens,
+		CacheReadTokens:    u.CacheReadTokens + other.CacheReadTokens,
+		CacheCreationTokens: u.CacheCreationTokens + other.CacheCreationTokens,
 	}
 }
 
