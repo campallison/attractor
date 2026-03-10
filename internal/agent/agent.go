@@ -122,7 +122,16 @@ func executeTool(registry *tools.Registry, tc llm.ToolCall, workDir string) llm.
 // returns the final assistant text response instead of printing it. Used by
 // the pipeline engine's codergen handler. It also returns accumulated token
 // usage and the number of LLM rounds executed.
-func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDir string) (string, llm.Usage, int, []llm.Message, error) {
+//
+// maxRoundsOverride controls how many rounds the agent may run. When 0, the
+// package-level default (50) is used. Pipeline stages can set this via the
+// max_rounds DOT attribute to impose tighter or looser limits per stage.
+func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDir string, maxRoundsOverride int) (string, llm.Usage, int, []llm.Message, error) {
+	limit := maxRounds
+	if maxRoundsOverride > 0 {
+		limit = maxRoundsOverride
+	}
+
 	registry := tools.DefaultRegistry("attractor-sandbox")
 	systemPrompt := BuildSystemPrompt(workDir)
 
@@ -135,8 +144,8 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 	var lastText string
 	var totalUsage llm.Usage
 
-	for round := 0; round < maxRounds; round++ {
-		slog.Info("agent.round", "round", round+1, "max", maxRounds)
+	for round := 0; round < limit; round++ {
+		slog.Info("agent.round", "round", round+1, "max", limit)
 		compressed := compressHistory(conversation, defaultKeepFullRounds)
 		resp, err := client.Complete(ctx, llm.Request{
 			Model:    model,
@@ -173,8 +182,8 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 		}
 	}
 
-	slog.Warn("agent.round_limit", "rounds", maxRounds, "tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens)
-	return lastText, totalUsage, maxRounds, conversation, ErrRoundLimitReached
+	slog.Warn("agent.round_limit", "rounds", limit, "tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens)
+	return lastText, totalUsage, limit, conversation, ErrRoundLimitReached
 }
 
 // summarize returns the first n characters of s, appending "..." if truncated.

@@ -147,6 +147,10 @@ func (n *Node) FallbackRetryTarget() string { return n.GetAttr("fallback_retry_t
 // MaxRetries returns the node's max_retries attribute, defaulting to 0.
 func (n *Node) MaxRetries() int { return n.GetInt("max_retries", 0) }
 
+// MaxRounds returns the node's max_rounds attribute, defaulting to 0. A value
+// of 0 means the agent should use its built-in default round limit.
+func (n *Node) MaxRounds() int { return n.GetInt("max_rounds", 0) }
+
 // CheckCmd returns the node's check_cmd attribute (e.g. "go build ./...").
 // When non-empty, the engine runs this command after the stage completes and
 // retries the stage if it fails.

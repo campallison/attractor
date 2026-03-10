@@ -125,7 +125,7 @@ func TestRunTaskCapture_ReturnsUsageAndRounds(t *testing.T) {
 		},
 	}
 
-	text, usage, rounds, conversation, err := RunTaskCapture(context.Background(), mock, "test-model", "create test.txt", t.TempDir())
+	text, usage, rounds, conversation, err := RunTaskCapture(context.Background(), mock, "test-model", "create test.txt", t.TempDir(), 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestRunTaskCapture_TextOnly(t *testing.T) {
 		},
 	}
 
-	text, usage, rounds, _, err := RunTaskCapture(context.Background(), mock, "test-model", "answer me", t.TempDir())
+	text, usage, rounds, _, err := RunTaskCapture(context.Background(), mock, "test-model", "answer me", t.TempDir(), 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestRunTaskCapture_RoundLimitReached(t *testing.T) {
 	mock := &infiniteToolCallCompleter{}
 
 	text, usage, rounds, conversation, err := RunTaskCapture(
-		context.Background(), mock, "test-model", "do infinite work", t.TempDir(),
+		context.Background(), mock, "test-model", "do infinite work", t.TempDir(), 0,
 	)
 
 	if !errors.Is(err, ErrRoundLimitReached) {
@@ -268,5 +268,24 @@ func TestRunTaskCapture_RoundLimitReached(t *testing.T) {
 	}
 	if diff := cmp.Diff(maxRounds, mock.callCount); diff != "" {
 		t.Errorf("expected exactly maxRounds LLM calls (-want +got):\n%s", diff)
+	}
+}
+
+func TestRunTaskCapture_CustomMaxRounds(t *testing.T) {
+	customLimit := 3
+	mock := &infiniteToolCallCompleter{}
+
+	_, _, rounds, _, err := RunTaskCapture(
+		context.Background(), mock, "test-model", "do work", t.TempDir(), customLimit,
+	)
+
+	if !errors.Is(err, ErrRoundLimitReached) {
+		t.Fatalf("expected ErrRoundLimitReached, got: %v", err)
+	}
+	if diff := cmp.Diff(customLimit, rounds); diff != "" {
+		t.Errorf("rounds should equal custom limit (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(customLimit, mock.callCount); diff != "" {
+		t.Errorf("LLM calls should equal custom limit (-want +got):\n%s", diff)
 	}
 }

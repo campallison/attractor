@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/campallison/attractor/internal/dot"
@@ -108,5 +110,58 @@ func TestAgentBackend_ReturnsUsage(t *testing.T) {
 	}
 	if diff := cmp.Diff("test/model", result.Model); diff != "" {
 		t.Errorf("model mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// infiniteToolClient always returns a tool call, never a final text response.
+type infiniteToolClient struct {
+	callCount int
+}
+
+func (c *infiniteToolClient) Complete(_ context.Context, _ llm.Request) (llm.Response, error) {
+	c.callCount++
+	args, _ := json.Marshal(map[string]string{"file_path": "dummy.txt"})
+	return llm.Response{
+		Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Parts: []llm.ContentPart{
+				{Kind: llm.KindText, Text: "reading..."},
+				{
+					Kind: llm.KindToolCall,
+					ToolCall: &llm.ToolCall{
+						ID:        fmt.Sprintf("call_%d", c.callCount),
+						Name:      "read_file",
+						Arguments: args,
+					},
+				},
+			},
+		},
+		Usage: llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+	}, nil
+}
+
+func TestAgentBackend_MaxRoundsThreaded(t *testing.T) {
+	client := &infiniteToolClient{}
+	backend := AgentBackend{
+		Client:  client,
+		Model:   "test/model",
+		WorkDir: t.TempDir(),
+	}
+	node := &dot.Node{ID: "tight_stage", Attrs: map[string]string{
+		"max_rounds": "3",
+	}}
+
+	result, err := backend.Run(node, "do work", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if diff := cmp.Diff(true, result.Exhausted); diff != "" {
+		t.Errorf("expected Exhausted=true (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(3, result.Rounds); diff != "" {
+		t.Errorf("rounds should match max_rounds (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(3, client.callCount); diff != "" {
+		t.Errorf("LLM calls should match max_rounds (-want +got):\n%s", diff)
 	}
 }
