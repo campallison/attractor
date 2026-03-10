@@ -94,6 +94,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 
 	var responseText string
 	var stageUsage *StageUsage
+	var lastConversation []llm.Message
 	if h.Backend != nil {
 		result, err := h.Backend.Run(node, prompt, ctx)
 		if err != nil {
@@ -117,6 +118,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 			_ = os.WriteFile(filepath.Join(stageDir, "usage.json"), usageData, 0o644)
 		}
 		if len(result.Conversation) > 0 {
+			lastConversation = result.Conversation
 			if convData, err := json.MarshalIndent(result.Conversation, "", "  "); err == nil {
 				_ = os.WriteFile(filepath.Join(stageDir, "conversation.json"), convData, 0o644)
 				slog.Info("pipeline.conversation.saved", "node", node.ID, "messages", len(result.Conversation))
@@ -199,22 +201,128 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	_ = os.WriteFile(filepath.Join(stageDir, "response.md"), []byte(responseText), 0o644)
 	slog.Info("pipeline.stage.done", "node", node.ID, "response_len", len(responseText))
 
+	files := extractFileList(lastConversation)
+	stageSummary := buildStageSummary(node.ID, files, responseText)
+
+	completedStages := ctx.GetString("completed_stages")
+	if completedStages != "" {
+		completedStages += "," + node.ID
+	} else {
+		completedStages = node.ID
+	}
+
+	slog.Info("pipeline.context_carryover", "node", node.ID, "files", len(files), "summary_len", len(stageSummary))
+
 	outcome := Outcome{
 		Status: StatusSuccess,
 		Notes:  "stage completed: " + node.ID,
 		Usage:  stageUsage,
 		ContextUpdates: map[string]string{
-			"last_stage":    node.ID,
-			"last_response": truncate(responseText, 200),
+			"last_stage":                    node.ID,
+			"last_response":                 truncate(responseText, 200),
+			"completed_stages":              completedStages,
+			"stage_summary:" + node.ID:      stageSummary,
 		},
 	}
 	writeStatus(stageDir, outcome)
 	return outcome
 }
 
-// expandVariables performs simple $goal variable expansion in prompts.
-func expandVariables(prompt string, g *dot.Graph, _ *Context) string {
-	return strings.ReplaceAll(prompt, "$goal", g.Goal())
+// --- Context carryover ---
+
+const summaryResponseMaxLen = 300
+
+// extractFileList scans a conversation for write_file and edit_file tool calls
+// and returns a deduplicated list of file paths in order of first appearance.
+func extractFileList(conversation []llm.Message) []string {
+	seen := make(map[string]bool)
+	var files []string
+	for _, msg := range conversation {
+		if msg.Role != llm.RoleAssistant {
+			continue
+		}
+		for _, tc := range msg.ToolCalls() {
+			if tc.Name != "write_file" && tc.Name != "edit_file" {
+				continue
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(tc.Arguments, &parsed); err != nil {
+				continue
+			}
+			path, ok := parsed["path"].(string)
+			if !ok || path == "" {
+				continue
+			}
+			if !seen[path] {
+				seen[path] = true
+				files = append(files, path)
+			}
+		}
+	}
+	return files
+}
+
+// buildStageSummary formats a concise summary of a completed stage for
+// injection into downstream prompts.
+func buildStageSummary(nodeID string, files []string, response string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[Stage: %s] completed.", nodeID)
+	if len(files) > 0 {
+		b.WriteString("\nFiles created/modified: ")
+		b.WriteString(strings.Join(files, ", "))
+	}
+	if response != "" {
+		summary := response
+		if len(summary) > summaryResponseMaxLen {
+			summary = summary[:summaryResponseMaxLen] + "..."
+		}
+		fmt.Fprintf(&b, "\nSummary: %s", summary)
+	}
+	return b.String()
+}
+
+// buildPriorContext reads completed stage summaries from the pipeline context
+// and formats them as a preamble block for the next stage's prompt.
+func buildPriorContext(ctx *Context) string {
+	stagesRaw := ctx.GetString("completed_stages")
+	if stagesRaw == "" {
+		return ""
+	}
+	stageIDs := strings.Split(stagesRaw, ",")
+
+	var parts []string
+	for _, id := range stageIDs {
+		summary := ctx.GetString("stage_summary:" + id)
+		if summary != "" {
+			parts = append(parts, summary)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+
+	return "=== PRIOR STAGE CONTEXT ===\n" +
+		strings.Join(parts, "\n\n") +
+		"\n=== END PRIOR STAGE CONTEXT ===\n\n"
+}
+
+// expandVariables performs variable expansion in prompts:
+//   - $goal is replaced with the graph-level goal attribute
+//   - $prior_context is replaced with summaries of completed stages
+//
+// If $prior_context does not appear in the prompt but prior context exists,
+// it is automatically prepended.
+func expandVariables(prompt string, g *dot.Graph, ctx *Context) string {
+	prompt = strings.ReplaceAll(prompt, "$goal", g.Goal())
+
+	priorCtx := buildPriorContext(ctx)
+	if strings.Contains(prompt, "$prior_context") {
+		prompt = strings.ReplaceAll(prompt, "$prior_context", priorCtx)
+	} else if priorCtx != "" {
+		prompt = priorCtx + prompt
+	}
+
+	return prompt
 }
 
 func truncate(s string, maxLen int) string {

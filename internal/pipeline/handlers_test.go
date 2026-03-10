@@ -565,3 +565,454 @@ func TestCodergenHandler_NoCheckCmd(t *testing.T) {
 		t.Error("CheckRunner should not be called when node has no check_cmd")
 	}
 }
+
+// --- Context carryover tests ---
+
+func TestExtractFileList(t *testing.T) {
+	tests := []struct {
+		name         string
+		conversation []llm.Message
+		want         []string
+	}{
+		{
+			name:         "empty conversation",
+			conversation: nil,
+			want:         nil,
+		},
+		{
+			name: "no write or edit calls",
+			conversation: []llm.Message{
+				llm.SystemMessage("system"),
+				llm.UserMessage("prompt"),
+				{
+					Role: llm.RoleAssistant,
+					Parts: []llm.ContentPart{{
+						Kind: llm.KindToolCall,
+						ToolCall: &llm.ToolCall{
+							ID: "c1", Name: "read_file",
+							Arguments: json.RawMessage(`{"path":"main.go"}`),
+						},
+					}},
+				},
+			},
+			want: nil,
+		},
+		{
+			name: "write and edit calls extracted",
+			conversation: []llm.Message{
+				llm.SystemMessage("system"),
+				{
+					Role: llm.RoleAssistant,
+					Parts: []llm.ContentPart{{
+						Kind: llm.KindToolCall,
+						ToolCall: &llm.ToolCall{
+							ID: "c1", Name: "write_file",
+							Arguments: json.RawMessage(`{"path":"go.mod","content":"module x"}`),
+						},
+					}},
+				},
+				llm.ToolResultMessage("c1", "wrote go.mod", false),
+				{
+					Role: llm.RoleAssistant,
+					Parts: []llm.ContentPart{{
+						Kind: llm.KindToolCall,
+						ToolCall: &llm.ToolCall{
+							ID: "c2", Name: "edit_file",
+							Arguments: json.RawMessage(`{"path":"main.go","old_string":"a","new_string":"b"}`),
+						},
+					}},
+				},
+				llm.ToolResultMessage("c2", "edited main.go", false),
+				{
+					Role: llm.RoleAssistant,
+					Parts: []llm.ContentPart{{
+						Kind: llm.KindToolCall,
+						ToolCall: &llm.ToolCall{
+							ID: "c3", Name: "write_file",
+							Arguments: json.RawMessage(`{"path":"internal/db/repo.go","content":"package db"}`),
+						},
+					}},
+				},
+			},
+			want: []string{"go.mod", "main.go", "internal/db/repo.go"},
+		},
+		{
+			name: "duplicate paths are deduplicated",
+			conversation: []llm.Message{
+				{
+					Role: llm.RoleAssistant,
+					Parts: []llm.ContentPart{{
+						Kind: llm.KindToolCall,
+						ToolCall: &llm.ToolCall{
+							ID: "c1", Name: "write_file",
+							Arguments: json.RawMessage(`{"path":"main.go","content":"v1"}`),
+						},
+					}},
+				},
+				{
+					Role: llm.RoleAssistant,
+					Parts: []llm.ContentPart{{
+						Kind: llm.KindToolCall,
+						ToolCall: &llm.ToolCall{
+							ID: "c2", Name: "edit_file",
+							Arguments: json.RawMessage(`{"path":"main.go","old_string":"v1","new_string":"v2"}`),
+						},
+					}},
+				},
+			},
+			want: []string{"main.go"},
+		},
+		{
+			name: "invalid JSON args are skipped",
+			conversation: []llm.Message{
+				{
+					Role: llm.RoleAssistant,
+					Parts: []llm.ContentPart{{
+						Kind: llm.KindToolCall,
+						ToolCall: &llm.ToolCall{
+							ID: "c1", Name: "write_file",
+							Arguments: json.RawMessage(`{invalid`),
+						},
+					}},
+				},
+			},
+			want: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractFileList(tc.conversation)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("extractFileList mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestBuildStageSummary(t *testing.T) {
+	tests := []struct {
+		name     string
+		nodeID   string
+		files    []string
+		response string
+		checks   func(t *testing.T, got string)
+	}{
+		{
+			name:     "with files and response",
+			nodeID:   "design",
+			files:    []string{"go.mod", "internal/models/models.go"},
+			response: "I designed the contract interfaces.",
+			checks: func(t *testing.T, got string) {
+				if !strings.HasPrefix(got, "[Stage: design] completed.") {
+					t.Errorf("missing header, got: %s", got)
+				}
+				if !strings.Contains(got, "go.mod, internal/models/models.go") {
+					t.Error("missing file list")
+				}
+				if !strings.Contains(got, "I designed the contract interfaces.") {
+					t.Error("missing response summary")
+				}
+			},
+		},
+		{
+			name:     "no files",
+			nodeID:   "analyze",
+			files:    nil,
+			response: "Analyzed the codebase.",
+			checks: func(t *testing.T, got string) {
+				if !strings.HasPrefix(got, "[Stage: analyze] completed.") {
+					t.Errorf("missing header, got: %s", got)
+				}
+				if strings.Contains(got, "Files created") {
+					t.Error("should not contain file list when no files")
+				}
+				if !strings.Contains(got, "Analyzed the codebase.") {
+					t.Error("missing response summary")
+				}
+			},
+		},
+		{
+			name:     "long response is truncated",
+			nodeID:   "verbose",
+			files:    []string{"a.go"},
+			response: strings.Repeat("x", 500),
+			checks: func(t *testing.T, got string) {
+				if !strings.Contains(got, "...") {
+					t.Error("long response should be truncated with ...")
+				}
+			},
+		},
+		{
+			name:     "empty response",
+			nodeID:   "quiet",
+			files:    []string{"b.go"},
+			response: "",
+			checks: func(t *testing.T, got string) {
+				if strings.Contains(got, "Summary:") {
+					t.Error("should not contain Summary: when response is empty")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildStageSummary(tc.nodeID, tc.files, tc.response)
+			tc.checks(t, got)
+		})
+	}
+}
+
+func TestBuildPriorContext(t *testing.T) {
+	tests := []struct {
+		name   string
+		setup  func(ctx *Context)
+		checks func(t *testing.T, got string)
+	}{
+		{
+			name:  "no completed stages",
+			setup: func(ctx *Context) {},
+			checks: func(t *testing.T, got string) {
+				if got != "" {
+					t.Errorf("expected empty string, got %q", got)
+				}
+			},
+		},
+		{
+			name: "one completed stage",
+			setup: func(ctx *Context) {
+				ctx.Set("completed_stages", "design")
+				ctx.Set("stage_summary:design", "[Stage: design] completed.\nFiles created/modified: go.mod")
+			},
+			checks: func(t *testing.T, got string) {
+				if !strings.HasPrefix(got, "=== PRIOR STAGE CONTEXT ===") {
+					t.Error("missing header")
+				}
+				if !strings.Contains(got, "[Stage: design]") {
+					t.Error("missing design summary")
+				}
+				if !strings.HasSuffix(got, "=== END PRIOR STAGE CONTEXT ===\n\n") {
+					t.Error("missing footer")
+				}
+			},
+		},
+		{
+			name: "multiple completed stages in order",
+			setup: func(ctx *Context) {
+				ctx.Set("completed_stages", "analyze,design,scaffold")
+				ctx.Set("stage_summary:analyze", "[Stage: analyze] completed.")
+				ctx.Set("stage_summary:design", "[Stage: design] completed.")
+				ctx.Set("stage_summary:scaffold", "[Stage: scaffold] completed.")
+			},
+			checks: func(t *testing.T, got string) {
+				analyzeIdx := strings.Index(got, "[Stage: analyze]")
+				designIdx := strings.Index(got, "[Stage: design]")
+				scaffoldIdx := strings.Index(got, "[Stage: scaffold]")
+				if analyzeIdx < 0 || designIdx < 0 || scaffoldIdx < 0 {
+					t.Fatalf("missing stage summaries in output: %s", got)
+				}
+				if analyzeIdx > designIdx || designIdx > scaffoldIdx {
+					t.Error("stages should appear in order")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := NewContext()
+			tc.setup(ctx)
+			got := buildPriorContext(ctx)
+			tc.checks(t, got)
+		})
+	}
+}
+
+func TestExpandVariables_PriorContext(t *testing.T) {
+	tests := []struct {
+		name   string
+		prompt string
+		setup  func(ctx *Context)
+		checks func(t *testing.T, got string)
+	}{
+		{
+			name:   "no prior context and no variable",
+			prompt: "Do the thing for $goal",
+			setup:  func(ctx *Context) {},
+			checks: func(t *testing.T, got string) {
+				if diff := cmp.Diff("Do the thing for build an app", got); diff != "" {
+					t.Errorf("mismatch (-want +got):\n%s", diff)
+				}
+			},
+		},
+		{
+			name:   "auto-prepend when no variable present",
+			prompt: "Implement the DB layer",
+			setup: func(ctx *Context) {
+				ctx.Set("completed_stages", "design")
+				ctx.Set("stage_summary:design", "[Stage: design] completed.\nFiles: go.mod")
+			},
+			checks: func(t *testing.T, got string) {
+				if !strings.HasPrefix(got, "=== PRIOR STAGE CONTEXT ===") {
+					t.Error("prior context should be prepended")
+				}
+				if !strings.Contains(got, "Implement the DB layer") {
+					t.Error("original prompt should follow the context block")
+				}
+			},
+		},
+		{
+			name:   "explicit $prior_context placement",
+			prompt: "First the context:\n$prior_context\nNow implement it.",
+			setup: func(ctx *Context) {
+				ctx.Set("completed_stages", "design")
+				ctx.Set("stage_summary:design", "[Stage: design] completed.")
+			},
+			checks: func(t *testing.T, got string) {
+				if strings.HasPrefix(got, "=== PRIOR STAGE CONTEXT ===") {
+					t.Error("should not be prepended when $prior_context is present")
+				}
+				if !strings.Contains(got, "First the context:") {
+					t.Error("text before $prior_context should be preserved")
+				}
+				if !strings.Contains(got, "[Stage: design]") {
+					t.Error("prior context should be inserted at $prior_context location")
+				}
+				if !strings.Contains(got, "Now implement it.") {
+					t.Error("text after $prior_context should be preserved")
+				}
+			},
+		},
+		{
+			name:   "no $prior_context variable and no summaries does not add block",
+			prompt: "Just do it",
+			setup:  func(ctx *Context) {},
+			checks: func(t *testing.T, got string) {
+				if diff := cmp.Diff("Just do it", got); diff != "" {
+					t.Errorf("mismatch (-want +got):\n%s", diff)
+				}
+			},
+		},
+	}
+
+	g := &dot.Graph{Attrs: map[string]string{"goal": "build an app"}}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := NewContext()
+			tc.setup(ctx)
+			got := expandVariables(tc.prompt, g, ctx)
+			tc.checks(t, got)
+		})
+	}
+}
+
+// conversationBackend returns a BackendResult with a pre-built conversation
+// containing write_file and edit_file tool calls.
+type conversationBackend struct {
+	files []string
+}
+
+func (b conversationBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {
+	var msgs []llm.Message
+	for i, path := range b.files {
+		callID := fmt.Sprintf("call_%d", i)
+		msgs = append(msgs, llm.Message{
+			Role: llm.RoleAssistant,
+			Parts: []llm.ContentPart{{
+				Kind: llm.KindToolCall,
+				ToolCall: &llm.ToolCall{
+					ID:        callID,
+					Name:      "write_file",
+					Arguments: json.RawMessage(fmt.Sprintf(`{"path":%q,"content":"package x"}`, path)),
+				},
+			}},
+		})
+		msgs = append(msgs, llm.ToolResultMessage(callID, "wrote "+path, false))
+	}
+	return BackendResult{
+		Response:     "completed stage " + node.ID,
+		Usage:        llm.Usage{InputTokens: 1000, OutputTokens: 200, TotalTokens: 1200},
+		Model:        "test-model",
+		Rounds:       3,
+		Conversation: msgs,
+	}, nil
+}
+
+func TestCodergenHandler_ContextCarryover(t *testing.T) {
+	logsRoot := t.TempDir()
+	g := &dot.Graph{Attrs: map[string]string{"goal": "build an app"}}
+	ctx := NewContext()
+
+	// Stage 1: design — creates contract files.
+	designBackend := conversationBackend{
+		files: []string{"go.mod", "internal/models/models.go", "internal/db/repository.go"},
+	}
+	h1 := CodergenHandler{Backend: designBackend}
+	node1 := &dot.Node{ID: "design", Attrs: map[string]string{
+		"shape":  "box",
+		"prompt": "Design the contracts.",
+	}}
+
+	out1 := h1.Execute(node1, ctx, g, logsRoot)
+	if diff := cmp.Diff(StatusSuccess, out1.Status); diff != "" {
+		t.Fatalf("stage 1 status (-want +got):\n%s", diff)
+	}
+
+	// Apply context updates (normally done by the engine).
+	ctx.ApplyUpdates(out1.ContextUpdates)
+
+	// Verify context was populated.
+	if diff := cmp.Diff("design", ctx.GetString("completed_stages")); diff != "" {
+		t.Errorf("completed_stages mismatch (-want +got):\n%s", diff)
+	}
+	summary := ctx.GetString("stage_summary:design")
+	if !strings.Contains(summary, "go.mod") {
+		t.Errorf("summary should contain go.mod, got: %s", summary)
+	}
+	if !strings.Contains(summary, "internal/models/models.go") {
+		t.Errorf("summary should contain models.go, got: %s", summary)
+	}
+
+	// Stage 2: scaffold — its prompt should receive the design summary.
+	scaffoldBackend := conversationBackend{
+		files: []string{"cmd/server/main.go", "internal/server/server.go"},
+	}
+	h2 := CodergenHandler{Backend: scaffoldBackend}
+	node2 := &dot.Node{ID: "scaffold", Attrs: map[string]string{
+		"shape":  "box",
+		"prompt": "Scaffold the project.",
+	}}
+
+	out2 := h2.Execute(node2, ctx, g, logsRoot)
+	if diff := cmp.Diff(StatusSuccess, out2.Status); diff != "" {
+		t.Fatalf("stage 2 status (-want +got):\n%s", diff)
+	}
+
+	// Check that the prompt.md for scaffold contains the prior context.
+	promptData, err := os.ReadFile(filepath.Join(logsRoot, "scaffold", "prompt.md"))
+	if err != nil {
+		t.Fatalf("reading scaffold prompt.md: %v", err)
+	}
+	promptStr := string(promptData)
+	if !strings.Contains(promptStr, "=== PRIOR STAGE CONTEXT ===") {
+		t.Error("scaffold prompt should contain prior context header")
+	}
+	if !strings.Contains(promptStr, "[Stage: design]") {
+		t.Error("scaffold prompt should contain design stage summary")
+	}
+	if !strings.Contains(promptStr, "go.mod") {
+		t.Error("scaffold prompt should list design stage files")
+	}
+	if !strings.Contains(promptStr, "Scaffold the project.") {
+		t.Error("scaffold prompt should contain the original prompt text")
+	}
+
+	// Apply stage 2 context updates.
+	ctx.ApplyUpdates(out2.ContextUpdates)
+
+	// Verify completed_stages is accumulated.
+	if diff := cmp.Diff("design,scaffold", ctx.GetString("completed_stages")); diff != "" {
+		t.Errorf("completed_stages after 2 stages (-want +got):\n%s", diff)
+	}
+}
