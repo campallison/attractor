@@ -271,6 +271,95 @@ func TestRunTaskCapture_RoundLimitReached(t *testing.T) {
 	}
 }
 
+func TestIsReadOnlyRound(t *testing.T) {
+	tests := []struct {
+		name  string
+		tools []string
+		want  bool
+	}{
+		{"empty", nil, false},
+		{"single read_file", []string{"read_file"}, true},
+		{"single write_file", []string{"write_file"}, false},
+		{"single edit_file", []string{"edit_file"}, false},
+		{"grep only", []string{"grep"}, true},
+		{"glob only", []string{"glob"}, true},
+		{"shell only", []string{"shell"}, true},
+		{"mixed reads", []string{"read_file", "grep", "shell"}, true},
+		{"read then write", []string{"read_file", "write_file"}, false},
+		{"read then edit", []string{"read_file", "edit_file"}, false},
+		{"write among many reads", []string{"read_file", "grep", "glob", "shell", "write_file"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []llm.ToolCall
+			for i, name := range tc.tools {
+				calls = append(calls, llm.ToolCall{
+					ID:   fmt.Sprintf("call_%d", i),
+					Name: name,
+				})
+			}
+			got := isReadOnlyRound(calls)
+			if got != tc.want {
+				t.Errorf("isReadOnlyRound(%v) = %v, want %v", tc.tools, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunTaskCapture_ReadLoopDetection(t *testing.T) {
+	mock := &infiniteToolCallCompleter{}
+
+	_, _, _, _, err := RunTaskCapture(
+		context.Background(), mock, "test-model", "analyze code", t.TempDir(), 10,
+	)
+
+	if !errors.Is(err, ErrRoundLimitReached) {
+		t.Fatalf("expected ErrRoundLimitReached, got: %v", err)
+	}
+	// The infiniteToolCallCompleter only issues read_file calls, so the
+	// read-loop detection should fire at round 5 (readLoopThreshold).
+	// We can't directly assert on slog output in a unit test, but we
+	// verify the agent still reaches round limit — detection is logging
+	// only in C1, not terminating.
+	if mock.callCount != 10 {
+		t.Errorf("expected 10 LLM calls (all rounds should run), got %d", mock.callCount)
+	}
+}
+
+func TestRunTaskCapture_ReadLoopResetsOnWrite(t *testing.T) {
+	// 4 read rounds, then 1 write, then 4 more reads, then text.
+	// Should NOT trigger read-loop detection (never hits 5 consecutive).
+	responses := []llm.Response{}
+	for i := 0; i < 4; i++ {
+		responses = append(responses, toolCallResponse(
+			fmt.Sprintf("r%d", i), "read_file", map[string]interface{}{"path": "file.go"},
+		))
+	}
+	responses = append(responses, toolCallResponse(
+		"w1", "write_file", map[string]interface{}{"file_path": "out.go", "content": "pkg"},
+	))
+	for i := 0; i < 4; i++ {
+		responses = append(responses, toolCallResponse(
+			fmt.Sprintf("r2_%d", i), "read_file", map[string]interface{}{"path": "other.go"},
+		))
+	}
+	responses = append(responses, textResponse("Done."))
+
+	mock := &mockCompleter{responses: responses}
+	text, _, rounds, _, err := RunTaskCapture(
+		context.Background(), mock, "test-model", "task", t.TempDir(), 0,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text != "Done." {
+		t.Errorf("expected 'Done.', got %q", text)
+	}
+	if rounds != 10 {
+		t.Errorf("expected 10 rounds (4 read + 1 write + 4 read + 1 text), got %d", rounds)
+	}
+}
+
 func TestRunTaskCapture_CustomMaxRounds(t *testing.T) {
 	customLimit := 3
 	mock := &infiniteToolCallCompleter{}

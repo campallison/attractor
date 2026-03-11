@@ -13,7 +13,16 @@ import (
 	"github.com/campallison/attractor/internal/tools"
 )
 
-const maxRounds = 50
+const (
+	maxRounds = 50
+
+	// readLoopThreshold is the number of consecutive read-only rounds before
+	// the agent loop logs a read-loop warning. A read-only round is one where
+	// all tool calls are reads (read_file, grep, glob, shell) with no writes
+	// (write_file, edit_file). This value is a starting point; it may need
+	// adjustment based on real-world pipeline runs.
+	readLoopThreshold = 5
+)
 
 // ErrRoundLimitReached is returned by RunTaskCapture when the agent exhausts
 // all rounds without naturally completing (i.e., the model never stopped
@@ -143,6 +152,7 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 	toolDefs := registry.Definitions()
 	var lastText string
 	var totalUsage llm.Usage
+	var consecutiveReadOnlyRounds int
 
 	for round := 0; round < limit; round++ {
 		slog.Info("agent.round", "round", round+1, "max", limit)
@@ -180,6 +190,20 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 				result.IsError,
 			))
 		}
+
+		if isReadOnlyRound(toolCalls) {
+			consecutiveReadOnlyRounds++
+			if consecutiveReadOnlyRounds >= readLoopThreshold {
+				slog.Warn("agent.read_loop_detected",
+					"consecutive_read_rounds", consecutiveReadOnlyRounds,
+					"round", round+1,
+					"tokens_in", totalUsage.InputTokens,
+					"tokens_out", totalUsage.OutputTokens,
+				)
+			}
+		} else {
+			consecutiveReadOnlyRounds = 0
+		}
 	}
 
 	slog.Warn("agent.round_limit", "rounds", limit, "tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens)
@@ -192,4 +216,25 @@ func summarize(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// writingTools are tool names that produce filesystem output.
+var writingTools = map[string]bool{
+	"write_file": true,
+	"edit_file":  true,
+}
+
+// isReadOnlyRound returns true if none of the tool calls in a round write
+// to the filesystem. An empty tool call list returns false (no-tool rounds
+// end the agent loop before this is called).
+func isReadOnlyRound(toolCalls []llm.ToolCall) bool {
+	if len(toolCalls) == 0 {
+		return false
+	}
+	for _, tc := range toolCalls {
+		if writingTools[tc.Name] {
+			return false
+		}
+	}
+	return true
 }

@@ -254,7 +254,7 @@ Both run the identical agent loop; `RunTaskCapture` was added for Layer 3 so the
 
 | File | Purpose |
 |---|---|
-| `agent/agent.go` | RunTask, RunTaskCapture (with usage tracking, exhaustion detection), executeTool, round loop |
+| `agent/agent.go` | RunTask, RunTaskCapture (with usage tracking, exhaustion detection, read-loop detection), executeTool, round loop |
 | `agent/prompt.go` | BuildSystemPrompt with env context, git deny-list rules, network rules, working memory convention (`_scratch/`) |
 | `agent/compress.go` | Conversation history compression (summarizes old tool results to reduce token costs) |
 | `tools/tools.go` | ToolExecutor, RegisteredTool, Registry, DefaultRegistry |
@@ -766,7 +766,7 @@ Key log events across the codebase:
 | `pipeline/engine` | Node start/done, edge selection, retries, budget warnings (50%/75%), halts | INFO/WARN |
 | `pipeline/handlers` | Stage start/done, build gate pass/fail/exhausted, conversation saved, scratch lifecycle | INFO/WARN/ERROR |
 | `pipeline/condition` | Condition evaluation results | DEBUG |
-| `agent/agent` | Round start, tool execution, text snippets, natural completion, round limit | INFO/WARN/DEBUG |
+| `agent/agent` | Round start, tool execution, text snippets, natural completion, round limit, read-loop detection | INFO/WARN/DEBUG |
 | `agent/compress` | Compression statistics (messages compressed, tokens saved) | DEBUG |
 | `tools/*` | File reads/writes/edits, shell commands, access denials | INFO/WARN |
 
