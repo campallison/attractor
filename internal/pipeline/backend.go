@@ -28,9 +28,9 @@ func (b AgentBackend) Run(node *dot.Node, prompt string, _ *Context) (BackendRes
 	}
 	text, usage, rounds, conversation, err := agent.RunTaskCapture(context.Background(), b.Client, model, prompt, b.WorkDir, node.MaxRounds())
 	if errors.Is(err, agent.ErrRoundLimitReached) || errors.Is(err, agent.ErrReadLoopDetected) {
-		reason := "round_limit"
+		reason := ExhaustionRoundLimit
 		if errors.Is(err, agent.ErrReadLoopDetected) {
-			reason = "read_loop"
+			reason = ExhaustionReadLoop
 		}
 		return BackendResult{
 			Response:         text,

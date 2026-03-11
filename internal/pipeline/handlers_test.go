@@ -246,7 +246,7 @@ type exhaustedBackend struct {
 func (b exhaustedBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {
 	reason := b.exhaustionReason
 	if reason == "" {
-		reason = "round_limit"
+		reason = ExhaustionRoundLimit
 	}
 	return BackendResult{
 		Response:         "Let me read the handler files...",
@@ -313,7 +313,7 @@ func TestCodergenHandler_ExhaustedBackend(t *testing.T) {
 
 func TestCodergenHandler_ReadLoopExhaustion(t *testing.T) {
 	logsRoot := t.TempDir()
-	h := CodergenHandler{Backend: exhaustedBackend{rounds: 10, exhaustionReason: "read_loop"}}
+	h := CodergenHandler{Backend: exhaustedBackend{rounds: 10, exhaustionReason: ExhaustionReadLoop}}
 	node := &dot.Node{ID: "read_loop_stage", Attrs: map[string]string{
 		"shape":  "box",
 		"prompt": "Analyze the codebase",
