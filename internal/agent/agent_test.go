@@ -331,7 +331,7 @@ type capturingReadCompleter struct {
 func (m *capturingReadCompleter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
 	m.requests = append(m.requests, req)
 	callID := fmt.Sprintf("call_%d", len(m.requests))
-	args, _ := json.Marshal(map[string]string{"path": "main.go"})
+	args, _ := json.Marshal(map[string]string{"file_path": "main.go"})
 	return llm.Response{
 		Message: llm.Message{
 			Role: llm.RoleAssistant,
