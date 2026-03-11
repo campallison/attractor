@@ -218,7 +218,8 @@ func summarize(s string, n int) string {
 	return s[:n] + "..."
 }
 
-// writingTools are tool names that produce filesystem output.
+// writingTools are tool names that produce filesystem output. Keep in sync
+// with tools registered in tools.DefaultRegistry that create or modify files.
 var writingTools = map[string]bool{
 	"write_file": true,
 	"edit_file":  true,
