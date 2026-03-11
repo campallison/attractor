@@ -769,6 +769,8 @@ func TestIsScratchPath(t *testing.T) {
 		{"internal/db/repo.go", false},
 		{"scratch/notes.md", false},
 		{"my_scratch_file.go", false},
+		{"_scratch", true},
+		{"../_scratch/foo", true},
 		{"", false},
 	}
 	for _, tc := range tests {
