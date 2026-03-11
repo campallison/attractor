@@ -148,7 +148,7 @@ The runner performs a pre-flight checklist (workdir, API key, Docker, model vali
 | Prompt Caching | Anthropic `cache_control` via OpenRouter | System/user messages cached at ~10% cost; reduces input token expense across multi-round agent loops |
 | Context Carryover | Stage summaries injected into downstream prompts | Reduces redundant file reads by giving each stage a structured summary of what prior stages produced |
 | Working Memory | `_scratch/` directory with engine lifecycle | Agents maintain working notes; engine seeds context, verifies summary, archives, and cleans between stages |
-| Behavioral Detection | Read-loop detection in agent loop | Warns when agent reads files for 5+ consecutive rounds without writing; foundation for nudge injection and early termination |
+| Behavioral Detection | Read-loop and empty-output detection | Warns on 5+ consecutive read-only rounds; warns when a stage produces no deliverable files (suppressible with `allow_empty_output=true`) |
 | Structured Logging | `log/slog` multi-handler | Always-on INFO to terminal, DEBUG to JSON file; no toggle flag |
 
 ## Spec Reference

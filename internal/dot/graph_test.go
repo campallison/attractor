@@ -191,6 +191,30 @@ func TestNode_DefaultValues(t *testing.T) {
 	if diff := cmp.Diff("", n.Model()); diff != "" {
 		t.Errorf("default model (-want +got):\n%s", diff)
 	}
+	if diff := cmp.Diff(false, n.AllowEmptyOutput()); diff != "" {
+		t.Errorf("default allow_empty_output (-want +got):\n%s", diff)
+	}
+}
+
+func TestNode_AllowEmptyOutput(t *testing.T) {
+	tests := []struct {
+		name  string
+		attrs map[string]string
+		want  bool
+	}{
+		{"unset defaults to false", map[string]string{}, false},
+		{"true", map[string]string{"allow_empty_output": "true"}, true},
+		{"false", map[string]string{"allow_empty_output": "false"}, false},
+		{"invalid defaults to false", map[string]string{"allow_empty_output": "maybe"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			n := &Node{ID: "test", Attrs: tt.attrs}
+			if diff := cmp.Diff(tt.want, n.AllowEmptyOutput()); diff != "" {
+				t.Errorf("AllowEmptyOutput mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
 }
 
 func TestParseDuration(t *testing.T) {

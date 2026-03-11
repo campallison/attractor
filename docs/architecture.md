@@ -540,6 +540,10 @@ When a node has `check_cmd` set (e.g., `check_cmd="go build ./..."`), the coderg
 
 Build gates enable **contract-first design**: the design stage produces Go interface files, downstream stages implement against them, and the compiler enforces consistency via `go build ./...` checks.
 
+#### Empty Stage Detection
+
+After a codergen stage completes successfully, the handler checks whether any deliverable files were written (via `extractFileList`). If the list is empty and the node does not have `allow_empty_output=true`, a `pipeline.stage.empty_output` warning is logged. This is advisory only — the stage still succeeds. Stages that produce text-only output (e.g., analysis stages) can suppress the warning with `allow_empty_output=true` in the DOT node attributes.
+
 #### Context Carryover Between Stages
 
 After each successful codergen stage, the handler extracts a structured summary: which files were created/modified (parsed from tool calls in the conversation) and a truncated response snippet. Files inside `_scratch/` are excluded from the file list since they are intermediate working notes, not deliverables. When a stage produces a `_scratch/SUMMARY.md`, its contents are included in the stage summary as "Stage notes," giving downstream stages the agent's synthesized findings rather than raw file paths.
@@ -764,7 +768,7 @@ Key log events across the codebase:
 | Package | Event | Level |
 |---|---|---|
 | `pipeline/engine` | Node start/done, edge selection, retries, budget warnings (50%/75%), halts | INFO/WARN |
-| `pipeline/handlers` | Stage start/done, build gate pass/fail/exhausted, conversation saved, scratch lifecycle | INFO/WARN/ERROR |
+| `pipeline/handlers` | Stage start/done, build gate pass/fail/exhausted, conversation saved, scratch lifecycle, empty output detection | INFO/WARN/ERROR |
 | `pipeline/condition` | Condition evaluation results | DEBUG |
 | `agent/agent` | Round start, tool execution, text snippets, natural completion, round limit, read-loop detection | INFO/WARN/DEBUG |
 | `agent/compress` | Compression statistics (messages compressed, tokens saved) | DEBUG |

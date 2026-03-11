@@ -1040,6 +1040,85 @@ func TestExpandVariables_PriorContext(t *testing.T) {
 	}
 }
 
+// readOnlyConversationBackend returns a conversation with only read_file calls
+// and no file writes — used to test empty stage detection.
+type readOnlyConversationBackend struct{}
+
+func (b readOnlyConversationBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {
+	msgs := []llm.Message{
+		{
+			Role: llm.RoleAssistant,
+			Parts: []llm.ContentPart{{
+				Kind: llm.KindToolCall,
+				ToolCall: &llm.ToolCall{
+					ID:        "call_1",
+					Name:      "read_file",
+					Arguments: json.RawMessage(`{"path":"main.go"}`),
+				},
+			}},
+		},
+		llm.ToolResultMessage("call_1", "package main", false),
+	}
+	return BackendResult{
+		Response:     "I analyzed the code but didn't write anything.",
+		Usage:        llm.Usage{InputTokens: 1000, OutputTokens: 200, TotalTokens: 1200},
+		Model:        "test-model",
+		Rounds:       2,
+		Conversation: msgs,
+	}, nil
+}
+
+func TestCodergenHandler_EmptyOutputWarning(t *testing.T) {
+	logsRoot := t.TempDir()
+	h := CodergenHandler{Backend: readOnlyConversationBackend{}}
+	node := &dot.Node{ID: "empty_stage", Attrs: map[string]string{
+		"shape":  "box",
+		"prompt": "Analyze the code",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	out := h.Execute(node, NewContext(), g, logsRoot)
+
+	// Stage should still succeed — empty output is a warning, not a failure.
+	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestCodergenHandler_EmptyOutputSuppressed(t *testing.T) {
+	logsRoot := t.TempDir()
+	h := CodergenHandler{Backend: readOnlyConversationBackend{}}
+	node := &dot.Node{ID: "text_only", Attrs: map[string]string{
+		"shape":              "box",
+		"prompt":             "Just analyze",
+		"allow_empty_output": "true",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	out := h.Execute(node, NewContext(), g, logsRoot)
+
+	// Should succeed without warning (allow_empty_output suppresses it).
+	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestCodergenHandler_NonEmptyOutputNoWarning(t *testing.T) {
+	logsRoot := t.TempDir()
+	h := CodergenHandler{Backend: conversationBackend{files: []string{"main.go"}}}
+	node := &dot.Node{ID: "productive", Attrs: map[string]string{
+		"shape":  "box",
+		"prompt": "Build something",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	out := h.Execute(node, NewContext(), g, logsRoot)
+
+	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // conversationBackend returns a BackendResult with a pre-built conversation
 // containing write_file and edit_file tool calls.
 type conversationBackend struct {

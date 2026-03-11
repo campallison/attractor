@@ -240,6 +240,11 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	}
 
 	files := extractFileList(lastConversation)
+
+	if h.Backend != nil && len(files) == 0 && !node.AllowEmptyOutput() {
+		slog.Warn("pipeline.stage.empty_output", "node", node.ID)
+	}
+
 	stageSummary := buildStageSummary(node.ID, files, responseText, scratchSummary)
 
 	completedStages := ctx.GetString("completed_stages")

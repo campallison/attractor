@@ -159,6 +159,11 @@ func (n *Node) CheckCmd() string { return n.GetAttr("check_cmd", "") }
 // CheckMaxRetries returns the maximum number of build-gate retries, defaulting to 3.
 func (n *Node) CheckMaxRetries() int { return n.GetInt("check_max_retries", 3) }
 
+// AllowEmptyOutput returns true if the node has allow_empty_output=true. When
+// false (default), the engine logs a warning if a codergen stage completes
+// without writing any deliverable files.
+func (n *Node) AllowEmptyOutput() bool { return n.GetBool("allow_empty_output", false) }
+
 // GetInt returns a node attribute parsed as an integer, or the fallback.
 func (n *Node) GetInt(key string, fallback int) int {
 	v, ok := n.Attrs[key]
