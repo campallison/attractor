@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/campallison/attractor/internal/llm"
@@ -316,13 +317,109 @@ func TestRunTaskCapture_ReadLoopDetection(t *testing.T) {
 	if !errors.Is(err, ErrRoundLimitReached) {
 		t.Fatalf("expected ErrRoundLimitReached, got: %v", err)
 	}
-	// The infiniteToolCallCompleter only issues read_file calls, so the
-	// read-loop detection should fire at round 5 (readLoopThreshold).
-	// We can't directly assert on slog output in a unit test, but we
-	// verify the agent still reaches round limit — detection is logging
-	// only in C1, not terminating.
 	if mock.callCount != 10 {
 		t.Errorf("expected 10 LLM calls (all rounds should run), got %d", mock.callCount)
+	}
+}
+
+// capturingReadCompleter always returns read_file calls and captures all
+// requests so tests can inspect the conversation for injected nudge messages.
+type capturingReadCompleter struct {
+	requests []llm.Request
+}
+
+func (m *capturingReadCompleter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	m.requests = append(m.requests, req)
+	callID := fmt.Sprintf("call_%d", len(m.requests))
+	args, _ := json.Marshal(map[string]string{"path": "main.go"})
+	return llm.Response{
+		Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Parts: []llm.ContentPart{{
+				Kind: llm.KindToolCall,
+				ToolCall: &llm.ToolCall{
+					ID:        callID,
+					Name:      "read_file",
+					Arguments: args,
+				},
+			}},
+		},
+		FinishReason: llm.FinishReason{Reason: "tool_calls"},
+		Usage:        llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+	}, nil
+}
+
+func TestRunTaskCapture_NudgeInjection(t *testing.T) {
+	mock := &capturingReadCompleter{}
+
+	// Run for 12 rounds: nudge fires at round 5, counter resets, then
+	// detection fires again at round 10 but no second nudge (maxNudges=1).
+	_, _, _, conversation, err := RunTaskCapture(
+		context.Background(), mock, "test-model", "analyze code", t.TempDir(), 12,
+	)
+
+	if !errors.Is(err, ErrRoundLimitReached) {
+		t.Fatalf("expected ErrRoundLimitReached, got: %v", err)
+	}
+
+	// Count nudge messages in the final conversation.
+	nudgeCount := 0
+	for _, msg := range conversation {
+		if msg.Role == llm.RoleUser {
+			text := msg.Text()
+			if strings.Contains(text, "[PIPELINE ENGINE]") {
+				nudgeCount++
+				if !strings.Contains(text, "_scratch/") {
+					t.Error("nudge should reference _scratch/")
+				}
+			}
+		}
+	}
+	if nudgeCount != 1 {
+		t.Errorf("expected exactly 1 nudge message in conversation, got %d", nudgeCount)
+	}
+
+	// Verify the nudge was present in the request sent to the LLM on the
+	// round after it was injected. The nudge fires after round 5 (index 4),
+	// so round 6 (index 5) should see it.
+	if len(mock.requests) < 7 {
+		t.Fatalf("expected at least 7 requests, got %d", len(mock.requests))
+	}
+	round6Req := mock.requests[5]
+	foundNudge := false
+	for _, msg := range round6Req.Messages {
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Text(), "[PIPELINE ENGINE]") {
+			foundNudge = true
+			break
+		}
+	}
+	if !foundNudge {
+		t.Error("expected nudge message in round 6 request to LLM")
+	}
+}
+
+func TestRunTaskCapture_NudgeResetsCounter(t *testing.T) {
+	// With 8 rounds: nudge at round 5, then only 3 more read rounds.
+	// The counter resets after the nudge, so it should NOT fire again
+	// (would need 5 more to re-trigger, but we only run 3 more).
+	mock := &capturingReadCompleter{}
+
+	_, _, _, conversation, err := RunTaskCapture(
+		context.Background(), mock, "test-model", "analyze code", t.TempDir(), 8,
+	)
+
+	if !errors.Is(err, ErrRoundLimitReached) {
+		t.Fatalf("expected ErrRoundLimitReached, got: %v", err)
+	}
+
+	nudgeCount := 0
+	for _, msg := range conversation {
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Text(), "[PIPELINE ENGINE]") {
+			nudgeCount++
+		}
+	}
+	if nudgeCount != 1 {
+		t.Errorf("expected exactly 1 nudge (counter should reset), got %d", nudgeCount)
 	}
 }
 

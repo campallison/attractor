@@ -22,6 +22,11 @@ const (
 	// (write_file, edit_file). This value is a starting point; it may need
 	// adjustment based on real-world pipeline runs.
 	readLoopThreshold = 5
+
+	// maxNudges is the maximum number of course-correction messages injected
+	// into the conversation when a read-loop is detected. After this many
+	// nudges, further detection events escalate to termination (C4).
+	maxNudges = 1
 )
 
 // ErrRoundLimitReached is returned by RunTaskCapture when the agent exhausts
@@ -153,6 +158,7 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 	var lastText string
 	var totalUsage llm.Usage
 	var consecutiveReadOnlyRounds int
+	var nudgeCount int
 
 	for round := 0; round < limit; round++ {
 		slog.Info("agent.round", "round", round+1, "max", limit)
@@ -197,9 +203,21 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 				slog.Warn("agent.read_loop_detected",
 					"consecutive_read_rounds", consecutiveReadOnlyRounds,
 					"round", round+1,
+					"nudge_count", nudgeCount,
 					"tokens_in", totalUsage.InputTokens,
 					"tokens_out", totalUsage.OutputTokens,
 				)
+				if nudgeCount < maxNudges {
+					nudgeCount++
+					nudgeMsg := fmt.Sprintf(
+						"[PIPELINE ENGINE] You have been reading files for %d consecutive rounds "+
+							"without writing any output. Remember to maintain working notes in _scratch/ "+
+							"as you go. If you have gathered enough information, begin writing your "+
+							"deliverables now.", consecutiveReadOnlyRounds)
+					conversation = append(conversation, llm.UserMessage(nudgeMsg))
+					slog.Info("agent.read_loop_nudge", "nudge_count", nudgeCount, "round", round+1)
+					consecutiveReadOnlyRounds = 0
+				}
 			}
 		} else {
 			consecutiveReadOnlyRounds = 0

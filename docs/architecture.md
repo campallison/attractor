@@ -254,7 +254,7 @@ Both run the identical agent loop; `RunTaskCapture` was added for Layer 3 so the
 
 | File | Purpose |
 |---|---|
-| `agent/agent.go` | RunTask, RunTaskCapture (with usage tracking, exhaustion detection, read-loop detection), executeTool, round loop |
+| `agent/agent.go` | RunTask, RunTaskCapture (with usage tracking, exhaustion detection, read-loop detection + nudge injection), executeTool, round loop |
 | `agent/prompt.go` | BuildSystemPrompt with env context, git deny-list rules, network rules, working memory convention (`_scratch/`) |
 | `agent/compress.go` | Conversation history compression (summarizes old tool results to reduce token costs) |
 | `tools/tools.go` | ToolExecutor, RegisteredTool, Registry, DefaultRegistry |
@@ -540,6 +540,17 @@ When a node has `check_cmd` set (e.g., `check_cmd="go build ./..."`), the coderg
 
 Build gates enable **contract-first design**: the design stage produces Go interface files, downstream stages implement against them, and the compiler enforces consistency via `go build ./...` checks.
 
+#### Read-Loop Detection and Nudge Injection
+
+The agent loop tracks consecutive read-only rounds (rounds where all tool calls are `read_file`, `grep`, `glob`, or `shell` with no `write_file` or `edit_file`). When 5 consecutive read-only rounds are detected:
+
+1. A `agent.read_loop_detected` warning is logged
+2. A course-correction message is injected into the conversation as a `user` role message with a `[PIPELINE ENGINE]` prefix, reminding the agent to maintain `_scratch/` notes and begin writing deliverables
+3. The consecutive-round counter resets, giving the agent a chance to course-correct
+4. At most 1 nudge is issued per stage; further detection events are logged but not nudged (escalation to early termination is handled separately)
+
+The nudge does not count as a round toward the round limit. The `[PIPELINE ENGINE]` prefix distinguishes engine-injected messages from the original user prompt.
+
 #### Empty Stage Detection
 
 After a codergen stage completes successfully, the handler checks whether any deliverable files were written (via `extractFileList`). If the list is empty and the node does not have `allow_empty_output=true`, a `pipeline.stage.empty_output` warning is logged. This is advisory only — the stage still succeeds. Stages that produce text-only output (e.g., analysis stages) can suppress the warning with `allow_empty_output=true` in the DOT node attributes.
@@ -770,7 +781,7 @@ Key log events across the codebase:
 | `pipeline/engine` | Node start/done, edge selection, retries, budget warnings (50%/75%), halts | INFO/WARN |
 | `pipeline/handlers` | Stage start/done, build gate pass/fail/exhausted, conversation saved, scratch lifecycle, empty output detection | INFO/WARN/ERROR |
 | `pipeline/condition` | Condition evaluation results | DEBUG |
-| `agent/agent` | Round start, tool execution, text snippets, natural completion, round limit, read-loop detection | INFO/WARN/DEBUG |
+| `agent/agent` | Round start, tool execution, text snippets, natural completion, round limit, read-loop detection, nudge injection | INFO/WARN/DEBUG |
 | `agent/compress` | Compression statistics (messages compressed, tokens saved) | DEBUG |
 | `tools/*` | File reads/writes/edits, shell commands, access denials | INFO/WARN |
 
