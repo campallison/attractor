@@ -438,14 +438,15 @@ func TestCodergenHandler_BuildGatePass(t *testing.T) {
 	}
 }
 
-// buildGateBackend tracks how many times Run is called and fails the check
-// on the first N attempts.
+// buildGateBackend tracks how many times Run is called and captures prompts.
 type buildGateBackend struct {
-	calls int
+	calls   int
+	prompts []string
 }
 
 func (b *buildGateBackend) Run(node *dot.Node, prompt string, _ *Context) (BackendResult, error) {
 	b.calls++
+	b.prompts = append(b.prompts, prompt)
 	return BackendResult{
 		Response: fmt.Sprintf("attempt %d for %s", b.calls, node.ID),
 		Usage:    llm.Usage{InputTokens: 1000, OutputTokens: 200, TotalTokens: 1200},
@@ -505,6 +506,15 @@ func TestCodergenHandler_BuildGateFailThenFix(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "undefined: models.Team") {
 		t.Errorf("error file should contain build error, got %q", string(data))
+	}
+
+	// Retry prompt should contain the scratch hint.
+	if len(backend.prompts) < 2 {
+		t.Fatal("expected at least 2 prompts (initial + retry)")
+	}
+	retryPrompt := backend.prompts[1]
+	if !strings.Contains(retryPrompt, "_scratch/") {
+		t.Error("retry prompt should contain scratch directory hint")
 	}
 }
 

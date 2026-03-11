@@ -189,7 +189,8 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 					return outcome
 				}
 
-				fixPrompt := prompt + "\n\n--- BUILD GATE FAILURE ---\nThe following compilation/check errors were found after your changes. Fix them:\n\n" + checkOutput
+				fixPrompt := prompt + "\n\n--- BUILD GATE FAILURE ---\nThe following compilation/check errors were found after your changes. Fix them:\n\n" + checkOutput +
+				"\n\nIf you maintained working notes in _scratch/, check them for context from your previous attempt before starting your fix."
 				fixResult, fixErr := h.Backend.Run(node, fixPrompt, ctx)
 				if fixErr != nil {
 					slog.Warn("pipeline.buildgate.fix.error", "node", node.ID, "error", fixErr)

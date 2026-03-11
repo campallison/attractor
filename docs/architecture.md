@@ -533,7 +533,7 @@ sequenceDiagram
 When a node has `check_cmd` set (e.g., `check_cmd="go build ./..."`), the codergen handler runs this command after the agent completes. If the check fails:
 
 1. The error output is saved as `buildgate_attempt_N.txt`
-2. The agent is re-invoked with the original prompt + "--- BUILD GATE FAILURE ---" + the error output
+2. The agent is re-invoked with the original prompt + "--- BUILD GATE FAILURE ---" + the error output + a hint to check `_scratch/` for working notes from the previous attempt
 3. This repeats up to `check_max_retries` times (default 3)
 4. Token usage is accumulated across all retry invocations
 5. If all retries are exhausted, the stage fails
