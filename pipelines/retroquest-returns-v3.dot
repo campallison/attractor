@@ -12,14 +12,54 @@ digraph RetroQuestReturns {
 		label="Analyze Old Codebase",
 		model="anthropic/claude-opus-4.6",
 		max_retries=1,
+		max_rounds=25,
 		prompt="You are analyzing a deprecated web application called RetroQuest to produce a feature specification for its replacement. The old codebase is at deprecated-retroquest/retroquest/ in your working directory.
 
-Study these areas of the old codebase:
-1. Backend API structure: read files in deprecated-retroquest/retroquest/api/src/main/java/com/ford/labs/retroquest/ -- look at the controller, service, and entity classes for: team, board, column, thought, actionitem
-2. Frontend structure: read deprecated-retroquest/retroquest/ui/src/App/Team/Retro/ for the retro board components, and ui/src/App/ for page structure
-3. Database schema: read deprecated-retroquest/retroquest/api/src/main/resources/db/changelog.xml for table definitions
+All Java source files are under deprecated-retroquest/retroquest/api/src/main/java/com/ford/labs/retroquest/ (abbreviated as SRC/ below).
 
-Based on your analysis, write a file called FEATURE_SPEC.md that defines the Tier 1 feature set for the new application:
+=== PROCESS ===
+
+Work in 4 batches. After each batch, IMMEDIATELY write your findings to ANALYSIS_NOTES.md (create it on batch 1, append on subsequent batches). Do NOT move to the next batch until your notes are written. Once notes are written for a batch, do NOT re-read those source files -- your notes are your reference.
+
+BATCH 1 - Team domain (read these files, then write notes):
+- SRC/team/Team.java
+- SRC/team/TeamService.java
+- SRC/team/TeamController.java
+- SRC/team/CreateTeamRequest.java
+- SRC/team/LoginRequest.java
+Note: fields, authentication flow, password hashing, team name validation rules.
+
+BATCH 2 - Thought and ActionItem domains (read these files, then append notes):
+- SRC/thought/Thought.java
+- SRC/thought/ThoughtService.java
+- SRC/thought/ThoughtController.java
+- SRC/thought/CreateThoughtRequest.java
+- SRC/actionitem/ActionItem.java
+- SRC/actionitem/ActionItemService.java
+- SRC/actionitem/ActionItemController.java
+- SRC/actionitem/CreateActionItemRequest.java
+Note: entity fields, CRUD operations, voting mechanics, discussed flag, assignee handling.
+
+BATCH 3 - Column, Board, and real-time (read these files, then append notes):
+- SRC/column/Column.java
+- SRC/column/ColumnService.java
+- SRC/column/ColumnController.java
+- SRC/board/Board.java
+- SRC/board/BoardService.java
+- SRC/board/BoardController.java
+- SRC/board/Retro.java
+- SRC/websocket/WebsocketService.java
+- SRC/websocket/events/WebsocketEventType.java
+Note: default columns, board lifecycle (create/end retro/archive), websocket event types and routing.
+
+BATCH 4 - Database schema and frontend overview (then append notes):
+- deprecated-retroquest/retroquest/api/src/main/resources/db/changelog.xml
+- Run: find deprecated-retroquest/retroquest/ui/src/App -type f -name '*.tsx' | head -40
+Note: table definitions, column types, frontend page structure.
+
+=== AFTER ALL BATCHES ===
+
+Read your ANALYSIS_NOTES.md, then write FEATURE_SPEC.md defining the Tier 1 feature set for the new application:
 
 - Team management: create team (name + password), login with team name + password, no individual user accounts
 - Retro board: 3 default thought columns (Happy, Confused, Sad) created when a team is created. Action Items is a separate section, not a thought column.
@@ -44,6 +84,7 @@ Tech stack for the new version (do NOT implement yet, just note in the spec):
 		label="Design Architecture",
 		model="anthropic/claude-opus-4.6",
 		max_retries=1,
+		max_rounds=25,
 		check_cmd="go build ./...",
 		prompt="You are designing the architecture for RetroQuest Returns. Read FEATURE_SPEC.md for the complete feature specification.
 
@@ -147,6 +188,7 @@ CRITICAL: The contract files MUST compile. If go build fails, fix the errors bef
 		label="Scaffold Project",
 		model="anthropic/claude-sonnet-4.6",
 		max_retries=1,
+		max_rounds=20,
 		check_cmd="go build ./...",
 		prompt="You are setting up the project skeleton for RetroQuest Returns. Read DESIGN.md for the architecture.
 
@@ -178,6 +220,7 @@ SCOPE: Do NOT implement business logic. Do NOT modify the contract files from th
 		label="Implement DB Layer",
 		model="anthropic/claude-sonnet-4.6",
 		max_retries=1,
+		max_rounds=25,
 		check_cmd="go test ./internal/db/...",
 		prompt="You are implementing the database layer for RetroQuest Returns using test-driven development.
 
@@ -236,6 +279,7 @@ SCOPE: Do NOT write HTTP handlers or templates. Only implement the data layer an
 		label="Implement Backend Logic",
 		model="anthropic/claude-opus-4.6",
 		max_retries=1,
+		max_rounds=35,
 		check_cmd="go test ./internal/auth/... ./internal/handlers/... ./internal/sse/...",
 		prompt="You are implementing the authentication, HTTP handlers, and SSE hub for RetroQuest Returns using test-driven development.
 
@@ -299,6 +343,7 @@ SCOPE: Do NOT write HTML templates."
 		label="Implement Frontend",
 		model="anthropic/claude-sonnet-4.6",
 		max_retries=1,
+		max_rounds=25,
 		prompt="You are implementing the frontend templates for RetroQuest Returns. Read the contract files and handler code to understand the exact data structures templates receive.
 
 Start by reading:
@@ -380,6 +425,7 @@ SCOPE: Do NOT modify Go source files. Only create or edit files in the templates
 		label="Wire Server",
 		model="anthropic/claude-sonnet-4.6",
 		max_retries=1,
+		max_rounds=25,
 		check_cmd="go test ./...",
 		prompt="You are wiring together all components of RetroQuest Returns into a working server, using test-driven development for the template renderer.
 
@@ -442,6 +488,7 @@ SCOPE: Do NOT modify handler logic or database queries. Only wire and implement 
 		label="Integration Tests",
 		model="anthropic/claude-sonnet-4.6",
 		max_retries=1,
+		max_rounds=25,
 		check_cmd="go test ./...",
 		prompt="You are writing integration and end-to-end tests for RetroQuest Returns.
 
@@ -488,6 +535,7 @@ SCOPE: Do NOT fix application bugs -- document them in TEST_NOTES.md."
 		label="Review and Fix",
 		model="anthropic/claude-opus-4.6",
 		max_retries=2,
+		max_rounds=20,
 		check_cmd="go test ./...",
 		prompt="You are reviewing the entire RetroQuest Returns codebase for correctness and completeness. Read every Go source file, every template, every test file, the migration SQL, and the design documents.
 
@@ -536,6 +584,7 @@ Write a file called REVIEW_NOTES.md documenting what you found and fixed."
 		label="Final Verification",
 		model="anthropic/claude-opus-4.6",
 		max_retries=2,
+		max_rounds=15,
 		goal_gate=true,
 		retry_target="review_fix",
 		check_cmd="go test ./...",
