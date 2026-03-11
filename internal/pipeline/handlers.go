@@ -275,6 +275,8 @@ const (
 
 // extractFileList scans a conversation for write_file and edit_file tool calls
 // and returns a deduplicated list of file paths in order of first appearance.
+// Paths inside _scratch/ are excluded since they are intermediate working
+// notes, not deliverables.
 func extractFileList(conversation []llm.Message) []string {
 	seen := make(map[string]bool)
 	var files []string
@@ -294,6 +296,9 @@ func extractFileList(conversation []llm.Message) []string {
 			if !ok || path == "" {
 				continue
 			}
+			if isScratchPath(path) {
+				continue
+			}
 			if !seen[path] {
 				seen[path] = true
 				files = append(files, path)
@@ -301,6 +306,20 @@ func extractFileList(conversation []llm.Message) []string {
 		}
 	}
 	return files
+}
+
+// isScratchPath returns true if the path is inside the _scratch/ directory.
+// Handles both relative paths (_scratch/foo) and absolute paths
+// (/work/dir/_scratch/foo).
+func isScratchPath(path string) bool {
+	clean := filepath.Clean(path)
+	parts := strings.Split(clean, string(filepath.Separator))
+	for _, part := range parts {
+		if part == scratchDir {
+			return true
+		}
+	}
+	return false
 }
 
 // buildStageSummary formats a concise summary of a completed stage for

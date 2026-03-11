@@ -688,6 +688,62 @@ func TestExtractFileList(t *testing.T) {
 			},
 			want: nil,
 		},
+		{
+			name: "scratch paths are excluded",
+			conversation: []llm.Message{
+				{
+					Role: llm.RoleAssistant,
+					Parts: []llm.ContentPart{{
+						Kind: llm.KindToolCall,
+						ToolCall: &llm.ToolCall{
+							ID: "c1", Name: "write_file",
+							Arguments: json.RawMessage(`{"path":"main.go","content":"package main"}`),
+						},
+					}},
+				},
+				{
+					Role: llm.RoleAssistant,
+					Parts: []llm.ContentPart{{
+						Kind: llm.KindToolCall,
+						ToolCall: &llm.ToolCall{
+							ID: "c2", Name: "write_file",
+							Arguments: json.RawMessage(`{"path":"_scratch/notes.md","content":"notes"}`),
+						},
+					}},
+				},
+				{
+					Role: llm.RoleAssistant,
+					Parts: []llm.ContentPart{{
+						Kind: llm.KindToolCall,
+						ToolCall: &llm.ToolCall{
+							ID: "c3", Name: "write_file",
+							Arguments: json.RawMessage(`{"path":"_scratch/SUMMARY.md","content":"summary"}`),
+						},
+					}},
+				},
+				{
+					Role: llm.RoleAssistant,
+					Parts: []llm.ContentPart{{
+						Kind: llm.KindToolCall,
+						ToolCall: &llm.ToolCall{
+							ID: "c4", Name: "write_file",
+							Arguments: json.RawMessage(`{"path":"/work/project/_scratch/plan.md","content":"plan"}`),
+						},
+					}},
+				},
+				{
+					Role: llm.RoleAssistant,
+					Parts: []llm.ContentPart{{
+						Kind: llm.KindToolCall,
+						ToolCall: &llm.ToolCall{
+							ID: "c5", Name: "write_file",
+							Arguments: json.RawMessage(`{"path":"internal/server.go","content":"package internal"}`),
+						},
+					}},
+				},
+			},
+			want: []string{"main.go", "internal/server.go"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -695,6 +751,31 @@ func TestExtractFileList(t *testing.T) {
 			got := extractFileList(tc.conversation)
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("extractFileList mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestIsScratchPath(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"_scratch/notes.md", true},
+		{"_scratch/SUMMARY.md", true},
+		{"_scratch/prior/analyze_summary.md", true},
+		{"/work/project/_scratch/plan.md", true},
+		{"main.go", false},
+		{"internal/db/repo.go", false},
+		{"scratch/notes.md", false},
+		{"my_scratch_file.go", false},
+		{"", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			got := isScratchPath(tc.path)
+			if got != tc.want {
+				t.Errorf("isScratchPath(%q) = %v, want %v", tc.path, got, tc.want)
 			}
 		})
 	}
