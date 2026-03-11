@@ -110,6 +110,7 @@ Key concepts:
 - **Edge conditions:** Edges can have conditions like `condition="outcome=success"` to control routing
 - **Retry:** Nodes support `max_retries` with exponential backoff
 - **Build gates:** Nodes can specify `check_cmd="go build ./..."` to run a compilation check after each stage. If the check fails, the agent is re-invoked with the error output up to `check_max_retries` times (default 3)
+- **Per-stage round limits:** Nodes can specify `max_rounds=25` to cap how many agent rounds a stage may run, preventing runaway stages from burning tokens
 - **Usage tracking:** Each codergen stage writes a `usage.json` with token counts, and the pipeline aggregates totals in `RunResult`
 - **Budget cap:** Set `MaxBudgetTokens` on `RunConfig` to halt the pipeline if cumulative token usage exceeds a threshold
 
@@ -126,6 +127,9 @@ go run ./cmd/run-pipeline/ -pipeline pipelines/my-pipeline.dot --simulate
 
 # Cheap test run with a different model + zero data retention
 go run ./cmd/run-pipeline/ -pipeline pipelines/my-pipeline.dot --model-override google/gemini-2.5-flash --zdr
+
+# Production run with prompt caching enabled (reduces cost for Anthropic models)
+go run ./cmd/run-pipeline/ -pipeline pipelines/my-pipeline.dot --prompt-cache
 ```
 
 The runner performs a pre-flight checklist (workdir, API key, Docker, model validation against OpenRouter's API, budget sanity) before execution begins.
@@ -141,6 +145,8 @@ The runner performs a pre-flight checklist (workdir, API key, Docker, model vali
 | Testing | Table-driven + go-cmp | Consistent patterns, readable diffs, easy to extend |
 | Build Gates | `check_cmd` attribute | Compiler-enforced correctness between stages; catches cross-file inconsistencies early |
 | Contract-First Design | Interface files from design stage | Downstream stages implement against shared Go interfaces, enforced by `go build` gates |
+| Prompt Caching | Anthropic `cache_control` via OpenRouter | System/user messages cached at ~10% cost; reduces input token expense across multi-round agent loops |
+| Context Carryover | Stage summaries injected into downstream prompts | Reduces redundant file reads by giving each stage a structured summary of what prior stages produced |
 | Structured Logging | `log/slog` multi-handler | Always-on INFO to terminal, DEBUG to JSON file; no toggle flag |
 
 ## Spec Reference

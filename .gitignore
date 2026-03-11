@@ -1,5 +1,6 @@
 .env
 development-notes/
+archived-pipelines/
 
 # Binaries for programs and plugins
 *.exe

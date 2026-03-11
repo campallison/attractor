@@ -139,9 +139,10 @@ ProviderError         -- base type for HTTP errors
 
 ### Design Notes
 
-- **Functional options pattern** for `Client` construction: `WithBaseURL()`, `WithHTTPClient()`, `WithZDR()`.
+- **Functional options pattern** for `Client` construction: `WithBaseURL()`, `WithHTTPClient()`, `WithZDR()`, `WithPromptCaching()`.
 - **`NewClientFromEnv()`** loads `.env` automatically so local development works without shell exports.
 - **Zero Data Retention (ZDR):** `WithZDR()` option adds OpenRouter's `provider.zdr: true` preference, routing requests only to providers that enforce zero data retention.
+- **Prompt Caching:** `WithPromptCaching()` enables Anthropic's `cache_control` mechanism for system and user messages. Cached prefixes are billed at ~10% of normal input cost. The `Usage` struct tracks `CacheReadTokens` and `CacheCreationTokens`.
 - **Wire format translation** is isolated in `openrouter.go` (unexported). Application code only sees the unified types in `types.go`. Adding a new provider means adding a new translation layer without changing any interfaces.
 
 ### Files
@@ -241,13 +242,13 @@ This preserves the beginning (context) and end (usually the result) of long outp
 | Function | Returns | Used By |
 |---|---|---|
 | `RunTask()` | `error` | `cmd/test-agent` -- prints to stdout |
-| `RunTaskCapture()` | `(string, llm.Usage, int, []llm.Message, error)` | Pipeline codergen handler -- captures response text, accumulated token usage, round count, and full conversation history |
+| `RunTaskCapture()` | `(string, llm.Usage, int, []llm.Message, error)` | Pipeline codergen handler -- captures response text, accumulated token usage, round count, and full conversation history. Accepts `maxRoundsOverride` to set per-stage round limits. |
 
 Both run the identical agent loop; `RunTaskCapture` was added for Layer 3 so the pipeline engine can capture LLM responses without stdout side effects. It returns the final text, the total `llm.Usage` accumulated across all LLM calls in the loop, the number of rounds executed, and the full conversation history (saved as `conversation.json` for post-mortem analysis).
 
-**Agent exhaustion:** When the agent hits the `maxRounds` limit without producing a text-only response, `RunTaskCapture` returns `agent.ErrRoundLimitReached`. This sentinel error causes the pipeline's codergen handler to report `StatusFail`, preventing silent failures from being treated as success.
+**Agent exhaustion:** When the agent hits the round limit without producing a text-only response, `RunTaskCapture` returns `agent.ErrRoundLimitReached`. This sentinel error causes the pipeline's codergen handler to report `StatusFail`, preventing silent failures from being treated as success. The round limit defaults to 50 but can be overridden per-stage via the `max_rounds` DOT attribute, allowing simpler stages to fail fast while complex stages get more room.
 
-**Conversation compression:** The agent loop compresses conversation history as it grows by summarizing old tool call results into concise summaries, reducing input token costs while preserving enough context for the model to stay on track.
+**Conversation compression:** The agent loop compresses conversation history as it grows. After a configurable number of recent rounds (default 4), older tool results are summarized. Compression uses several strategies: `write_file`/`edit_file` results are compressed immediately regardless of age ("write-and-forget"), large `read_file` results get skeleton summaries (first/last few lines), short `shell` outputs are preserved verbatim, and other tool results get one-line path-based summaries.
 
 ### Files
 
@@ -330,6 +331,7 @@ Node
   .Model() string                   -- per-node LLM model override (empty = use default)
   .GoalGate() bool
   .MaxRetries() int
+  .MaxRounds() int                   -- per-node agent round limit (0 = use agent default of 50)
   .CheckCmd() string                -- build gate command (e.g. "go build ./...")
   .CheckMaxRetries() int            -- max build gate retries (default 3)
   .RetryTarget() string             -- node to jump to on goal gate failure
@@ -538,6 +540,12 @@ When a node has `check_cmd` set (e.g., `check_cmd="go build ./..."`), the coderg
 
 Build gates enable **contract-first design**: the design stage produces Go interface files, downstream stages implement against them, and the compiler enforces consistency via `go build ./...` checks.
 
+#### Context Carryover Between Stages
+
+After each successful codergen stage, the handler extracts a structured summary: which files were created/modified (parsed from tool calls in the conversation) and a truncated response snippet. These summaries are stored in the pipeline `Context` under `stage_summary:{nodeID}` keys.
+
+Downstream codergen stages automatically receive prior summaries prepended to their prompts. If a prompt contains `$prior_context`, the summaries replace that variable; otherwise they are auto-prepended. This gives each stage awareness of what earlier stages produced, reducing redundant file reads.
+
 #### Context
 
 Thread-safe key-value store (`sync.RWMutex`) shared across all nodes during a run:
@@ -662,7 +670,7 @@ Each pipeline execution produces:
 
 | File | Purpose |
 |---|---|
-| `dot/graph.go` | Graph, Node, Edge types, accessors (Model, CheckCmd, CheckMaxRetries, etc.), ParseDuration |
+| `dot/graph.go` | Graph, Node, Edge types, accessors (Model, MaxRounds, CheckCmd, CheckMaxRetries, etc.), ParseDuration |
 | `dot/lexer.go` | Tokenizer with comment stripping and position tracking |
 | `dot/parser.go` | Recursive descent parser for DOT subset, recursion depth limit |
 | `pipeline/outcome.go` | StageStatus enum, Outcome struct, and StageUsage type |
@@ -770,6 +778,7 @@ Key flags:
 | `--simulate` | Use `SimulatedBackend` (no LLM, no Docker) for structural testing |
 | `--model-override MODEL` | Force all stages to use a specific model (useful for cheap test runs) |
 | `--zdr` | Enforce Zero Data Retention routing on OpenRouter |
+| `--prompt-cache` | Enable prompt caching for Anthropic models (reduces input token cost) |
 | `--budget N` | Max total tokens before stopping |
 | `--no-docker` | Skip Docker container setup (build gates disabled) |
 
@@ -808,4 +817,4 @@ All tests follow consistent patterns:
 - **`SimulatedBackend`** for pipeline engine tests without real LLM calls
 - **`failingBackend`** and **`exhaustedBackend`** for testing error paths through the codergen handler
 - **`buildGateBackend`** with mock `CheckRunner` for testing build gate retry logic
-- **Regression tests** that parse and validate the example pipeline DOT files in `pipelines/`
+- **Regression tests** that parse and validate example pipeline DOT files

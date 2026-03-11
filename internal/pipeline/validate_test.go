@@ -453,7 +453,7 @@ func projectRoot() string {
 }
 
 func TestValidate_ExamplePipelineV1_NoErrors(t *testing.T) {
-	dotPath := filepath.Join(projectRoot(), "pipelines", "retroquest-returns.dot")
+	dotPath := filepath.Join(projectRoot(), "archived-pipelines", "retroquest-returns.dot")
 	src, err := os.ReadFile(dotPath)
 	if err != nil {
 		t.Skipf("skipping: pipeline file not found: %v", err)
@@ -472,7 +472,7 @@ func TestValidate_ExamplePipelineV1_NoErrors(t *testing.T) {
 }
 
 func TestValidate_ExamplePipelineV2_NoErrors(t *testing.T) {
-	dotPath := filepath.Join(projectRoot(), "pipelines", "retroquest-returns-v2.dot")
+	dotPath := filepath.Join(projectRoot(), "archived-pipelines", "retroquest-returns-v2.dot")
 	src, err := os.ReadFile(dotPath)
 	if err != nil {
 		t.Skipf("skipping: pipeline file not found: %v", err)
@@ -491,7 +491,7 @@ func TestValidate_ExamplePipelineV2_NoErrors(t *testing.T) {
 }
 
 func TestValidate_ExamplePipelineV2_ExpectedWarnings(t *testing.T) {
-	dotPath := filepath.Join(projectRoot(), "pipelines", "retroquest-returns-v2.dot")
+	dotPath := filepath.Join(projectRoot(), "archived-pipelines", "retroquest-returns-v2.dot")
 	src, err := os.ReadFile(dotPath)
 	if err != nil {
 		t.Skipf("skipping: pipeline file not found: %v", err)
