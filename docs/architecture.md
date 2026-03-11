@@ -255,7 +255,7 @@ Both run the identical agent loop; `RunTaskCapture` was added for Layer 3 so the
 | File | Purpose |
 |---|---|
 | `agent/agent.go` | RunTask, RunTaskCapture (with usage tracking, exhaustion detection), executeTool, round loop |
-| `agent/prompt.go` | BuildSystemPrompt with env context, git deny-list rules, network rules |
+| `agent/prompt.go` | BuildSystemPrompt with env context, git deny-list rules, network rules, working memory convention (`_scratch/`) |
 | `agent/compress.go` | Conversation history compression (summarizes old tool results to reduce token costs) |
 | `tools/tools.go` | ToolExecutor, RegisteredTool, Registry, DefaultRegistry |
 | `tools/readfile.go` | read_file implementation, resolvePath with symlink resolution, sensitive file deny-list |

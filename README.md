@@ -147,6 +147,7 @@ The runner performs a pre-flight checklist (workdir, API key, Docker, model vali
 | Contract-First Design | Interface files from design stage | Downstream stages implement against shared Go interfaces, enforced by `go build` gates |
 | Prompt Caching | Anthropic `cache_control` via OpenRouter | System/user messages cached at ~10% cost; reduces input token expense across multi-round agent loops |
 | Context Carryover | Stage summaries injected into downstream prompts | Reduces redundant file reads by giving each stage a structured summary of what prior stages produced |
+| Working Memory | `_scratch/` directory convention in system prompt | Agents maintain working notes on the filesystem; synthesize into `_scratch/SUMMARY.md` before completing |
 | Structured Logging | `log/slog` multi-handler | Always-on INFO to terminal, DEBUG to JSON file; no toggle flag |
 
 ## Spec Reference

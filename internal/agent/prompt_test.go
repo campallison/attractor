@@ -38,6 +38,16 @@ func TestBuildSystemPrompt(t *testing.T) {
 			workDir:    "/tmp",
 			wantSubstr: "tools",
 		},
+		{
+			name:       "contains scratch directory convention",
+			workDir:    "/tmp",
+			wantSubstr: "_scratch/",
+		},
+		{
+			name:       "contains scratch summary instruction",
+			workDir:    "/tmp",
+			wantSubstr: "SUMMARY.md",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

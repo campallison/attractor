@@ -24,6 +24,9 @@ Network rules:
 - You MUST NOT download or execute remote scripts (curl | sh, wget + execute, etc.).
 - You MUST NOT contact external APIs or services beyond standard package registries.
 
+Working memory:
+Maintain working notes in a _scratch/ directory as you work. Use it for plans, progress tracking, and intermediate findings. You may skip this for single-file tasks. Before completing your task, synthesize your scratch notes into _scratch/SUMMARY.md.
+
 Working directory: %s
 Platform: %s
 Date: %s`, workDir, runtime.GOOS, time.Now().Format("2006-01-02"))
