@@ -692,11 +692,12 @@ func TestExtractFileList(t *testing.T) {
 
 func TestBuildStageSummary(t *testing.T) {
 	tests := []struct {
-		name     string
-		nodeID   string
-		files    []string
-		response string
-		checks   func(t *testing.T, got string)
+		name           string
+		nodeID         string
+		files          []string
+		response       string
+		scratchSummary string
+		checks         func(t *testing.T, got string)
 	}{
 		{
 			name:     "with files and response",
@@ -754,11 +755,50 @@ func TestBuildStageSummary(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:           "with scratch summary",
+			nodeID:         "analyze",
+			files:          []string{"FEATURE_SPEC.md"},
+			response:       "Done.",
+			scratchSummary: "Identified 5 core entities and 3 API endpoints.",
+			checks: func(t *testing.T, got string) {
+				if !strings.Contains(got, "Stage notes: Identified 5 core entities") {
+					t.Error("missing scratch summary in output")
+				}
+			},
+		},
+		{
+			name:           "long scratch summary is truncated",
+			nodeID:         "analyze",
+			files:          nil,
+			response:       "Done.",
+			scratchSummary: strings.Repeat("note ", 300),
+			checks: func(t *testing.T, got string) {
+				if !strings.Contains(got, "Stage notes:") {
+					t.Error("missing Stage notes label")
+				}
+				if !strings.Contains(got, "...") {
+					t.Error("long scratch summary should be truncated")
+				}
+			},
+		},
+		{
+			name:           "empty scratch summary omitted",
+			nodeID:         "design",
+			files:          []string{"a.go"},
+			response:       "Done.",
+			scratchSummary: "",
+			checks: func(t *testing.T, got string) {
+				if strings.Contains(got, "Stage notes:") {
+					t.Error("should not contain Stage notes when scratch summary is empty")
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := buildStageSummary(tc.nodeID, tc.files, tc.response)
+			got := buildStageSummary(tc.nodeID, tc.files, tc.response, tc.scratchSummary)
 			tc.checks(t, got)
 		})
 	}

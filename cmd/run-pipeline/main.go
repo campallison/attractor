@@ -130,7 +130,7 @@ func main() {
 	if *simulate {
 		fmt.Println("    Mode: SIMULATED (no LLM calls, no Docker)")
 		fmt.Println("    Build gates: skipped (simulate mode)")
-		registry = pipeline.DefaultHandlerRegistry(pipeline.CodergenHandler{Backend: pipeline.SimulatedBackend{}})
+		registry = pipeline.DefaultHandlerRegistry(pipeline.CodergenHandler{Backend: pipeline.SimulatedBackend{}, WorkDir: *workDir})
 	} else {
 		// 3b. Start Docker sandbox
 		if *noDocker {
@@ -179,6 +179,7 @@ func main() {
 		registry = pipeline.DefaultHandlerRegistry(pipeline.CodergenHandler{
 			Backend:     backend,
 			CheckRunner: checkRunner,
+			WorkDir:     *workDir,
 		})
 	}
 

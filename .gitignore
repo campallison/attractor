@@ -1,6 +1,7 @@
 .env
 development-notes/
 archived-pipelines/
+_scratch/
 
 # Binaries for programs and plugins
 *.exe

@@ -546,6 +546,17 @@ After each successful codergen stage, the handler extracts a structured summary:
 
 Downstream codergen stages automatically receive prior summaries prepended to their prompts. If a prompt contains `$prior_context`, the summaries replace that variable; otherwise they are auto-prepended. This gives each stage awareness of what earlier stages produced, reducing redundant file reads.
 
+#### Scratch Directory Lifecycle
+
+The engine manages a `_scratch/` directory in the work directory as persistent working memory for agents. The lifecycle follows each codergen stage:
+
+1. **Pre-stage (setup):** The engine creates `_scratch/` and seeds it with `stage_context.md` (stage name, completed stages, task description). A `_scratch/prior/` subdirectory accumulates summaries from earlier stages.
+2. **During stage:** The agent uses `_scratch/` for working notes, plans, and intermediate findings (per the system prompt convention). Before finishing, it synthesizes its notes into `_scratch/SUMMARY.md`.
+3. **Post-stage (verify):** The engine checks for `_scratch/SUMMARY.md`. If missing, a warning is logged (advisory; the stage is not failed).
+4. **Post-stage (archive and clean):** All scratch files are copied to `.attractor-logs/<run>/<stage>/scratch/` for debugging. The work directory's `_scratch/` is cleaned — only `prior/` survives. `SUMMARY.md` is moved to `_scratch/prior/<stage>_summary.md` for downstream stages.
+
+In simulate mode, scratch setup and cleanup are skipped. The `_scratch/` directory is listed in `.gitignore` to prevent agents from committing scratch artifacts.
+
 #### Context
 
 Thread-safe key-value store (`sync.RWMutex`) shared across all nodes during a run:
@@ -677,7 +688,8 @@ Each pipeline execution produces:
 | `pipeline/context.go` | Thread-safe key-value context |
 | `pipeline/condition.go` | Condition expression evaluator |
 | `pipeline/handler.go` | Handler interface, HandlerRegistry, shape mapping |
-| `pipeline/handlers.go` | Start, Exit, Conditional, Codergen handlers (with build gate logic), CheckRunner, BackendResult, backends |
+| `pipeline/handlers.go` | Start, Exit, Conditional, Codergen handlers (with build gate and scratch lifecycle), CheckRunner, BackendResult, backends |
+| `pipeline/scratch.go` | Scratch directory lifecycle: SetupScratch, ArchiveAndCleanScratch, copyDir |
 | `pipeline/engine.go` | Core loop, edge selection, goal gates, retry, backoff, usage aggregation, failure halting |
 | `pipeline/checkpoint.go` | JSON checkpoint save/load/resume |
 | `pipeline/validate.go` | 16 lint rules, Diagnostic model, ValidateOrError |
@@ -752,7 +764,7 @@ Key log events across the codebase:
 | Package | Event | Level |
 |---|---|---|
 | `pipeline/engine` | Node start/done, edge selection, retries, budget warnings (50%/75%), halts | INFO/WARN |
-| `pipeline/handlers` | Stage start/done, build gate pass/fail/exhausted, conversation saved | INFO/WARN/ERROR |
+| `pipeline/handlers` | Stage start/done, build gate pass/fail/exhausted, conversation saved, scratch lifecycle | INFO/WARN/ERROR |
 | `pipeline/condition` | Condition evaluation results | DEBUG |
 | `agent/agent` | Round start, tool execution, text snippets, natural completion, round limit | INFO/WARN/DEBUG |
 | `agent/compress` | Compression statistics (messages compressed, tokens saved) | DEBUG |

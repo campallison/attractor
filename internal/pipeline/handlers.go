@@ -74,9 +74,14 @@ type CheckRunner func(cmd string) (output string, err error)
 // When CheckRunner is non-nil and the node has a check_cmd attribute, the
 // handler runs the check after the agent completes. If the check fails, the
 // agent is re-invoked with the error output up to check_max_retries times.
+//
+// WorkDir is the project work directory where agents create files. When set,
+// the handler manages a _scratch/ directory lifecycle: setup before the stage,
+// summary verification after, and archive+cleanup between stages.
 type CodergenHandler struct {
 	Backend     CodergenBackend
 	CheckRunner CheckRunner
+	WorkDir     string
 }
 
 func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, logsRoot string) Outcome {
@@ -91,6 +96,27 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	stageDir := filepath.Join(logsRoot, sanitizeNodeID(node.ID))
 	_ = os.MkdirAll(stageDir, 0o755)
 	_ = os.WriteFile(filepath.Join(stageDir, "prompt.md"), []byte(prompt), 0o644)
+
+	// Scratch lifecycle: set up _scratch/ before the agent runs.
+	if h.WorkDir != "" && h.Backend != nil {
+		completedRaw := ctx.GetString("completed_stages")
+		var completed []string
+		if completedRaw != "" {
+			completed = strings.Split(completedRaw, ",")
+		}
+		desc := node.Prompt()
+		if desc == "" {
+			desc = node.NodeLabel()
+		}
+		if len(desc) > 200 {
+			desc = desc[:200] + "..."
+		}
+		if err := SetupScratch(h.WorkDir, node.ID, completed, desc); err != nil {
+			slog.Warn("pipeline.scratch.setup.error", "node", node.ID, "error", err)
+		}
+	} else if h.Backend == nil {
+		slog.Info("pipeline.scratch.skipped", "node", node.ID, "reason", "simulate mode")
+	}
 
 	var responseText string
 	var stageUsage *StageUsage
@@ -201,8 +227,18 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	_ = os.WriteFile(filepath.Join(stageDir, "response.md"), []byte(responseText), 0o644)
 	slog.Info("pipeline.stage.done", "node", node.ID, "response_len", len(responseText))
 
+	// Scratch lifecycle: archive, read summary, clean up.
+	var scratchSummary string
+	if h.WorkDir != "" && h.Backend != nil {
+		var err error
+		scratchSummary, err = ArchiveAndCleanScratch(h.WorkDir, logsRoot, node.ID)
+		if err != nil {
+			slog.Warn("pipeline.scratch.archive.error", "node", node.ID, "error", err)
+		}
+	}
+
 	files := extractFileList(lastConversation)
-	stageSummary := buildStageSummary(node.ID, files, responseText)
+	stageSummary := buildStageSummary(node.ID, files, responseText, scratchSummary)
 
 	completedStages := ctx.GetString("completed_stages")
 	if completedStages != "" {
@@ -230,7 +266,10 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 
 // --- Context carryover ---
 
-const summaryResponseMaxLen = 300
+const (
+	summaryResponseMaxLen = 300
+	scratchSummaryMaxLen  = 1000
+)
 
 // extractFileList scans a conversation for write_file and edit_file tool calls
 // and returns a deduplicated list of file paths in order of first appearance.
@@ -263,13 +302,21 @@ func extractFileList(conversation []llm.Message) []string {
 }
 
 // buildStageSummary formats a concise summary of a completed stage for
-// injection into downstream prompts.
-func buildStageSummary(nodeID string, files []string, response string) string {
+// injection into downstream prompts. When scratchSummary is non-empty, it
+// includes the agent's synthesized notes from _scratch/SUMMARY.md.
+func buildStageSummary(nodeID string, files []string, response, scratchSummary string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[Stage: %s] completed.", nodeID)
 	if len(files) > 0 {
 		b.WriteString("\nFiles created/modified: ")
 		b.WriteString(strings.Join(files, ", "))
+	}
+	if scratchSummary != "" {
+		summary := scratchSummary
+		if len(summary) > scratchSummaryMaxLen {
+			summary = summary[:scratchSummaryMaxLen] + "..."
+		}
+		fmt.Fprintf(&b, "\nStage notes: %s", summary)
 	}
 	if response != "" {
 		summary := response
