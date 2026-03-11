@@ -239,16 +239,22 @@ func TestSanitizeNodeID(t *testing.T) {
 }
 
 type exhaustedBackend struct {
-	rounds int
+	rounds           int
+	exhaustionReason string
 }
 
 func (b exhaustedBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {
+	reason := b.exhaustionReason
+	if reason == "" {
+		reason = "round_limit"
+	}
 	return BackendResult{
-		Response:  "Let me read the handler files...",
-		Usage:     llm.Usage{InputTokens: 50000, OutputTokens: 8000, TotalTokens: 58000},
-		Model:     "anthropic/claude-opus-4.6",
-		Rounds:    b.rounds,
-		Exhausted: true,
+		Response:         "Let me read the handler files...",
+		Usage:            llm.Usage{InputTokens: 50000, OutputTokens: 8000, TotalTokens: 58000},
+		Model:            "anthropic/claude-opus-4.6",
+		Rounds:           b.rounds,
+		Exhausted:        true,
+		ExhaustionReason: reason,
 	}, nil
 }
 
@@ -302,6 +308,28 @@ func TestCodergenHandler_ExhaustedBackend(t *testing.T) {
 	}
 	if diff := cmp.Diff("fail", sj.Outcome); diff != "" {
 		t.Errorf("status.json outcome mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestCodergenHandler_ReadLoopExhaustion(t *testing.T) {
+	logsRoot := t.TempDir()
+	h := CodergenHandler{Backend: exhaustedBackend{rounds: 10, exhaustionReason: "read_loop"}}
+	node := &dot.Node{ID: "read_loop_stage", Attrs: map[string]string{
+		"shape":  "box",
+		"prompt": "Analyze the codebase",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	out := h.Execute(node, NewContext(), g, logsRoot)
+
+	if diff := cmp.Diff(StatusFail, out.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+	if !strings.Contains(out.FailureReason, "read-loop") {
+		t.Errorf("expected failure reason to mention read-loop, got %q", out.FailureReason)
+	}
+	if !strings.Contains(out.FailureReason, "10") {
+		t.Errorf("expected failure reason to include round count, got %q", out.FailureReason)
 	}
 }
 

@@ -35,6 +35,13 @@ const (
 // conversation for post-mortem analysis.
 var ErrRoundLimitReached = errors.New("agent: round limit reached without completing task")
 
+// ErrReadLoopDetected is returned by RunTaskCapture when the agent persists
+// in a read-loop after receiving a nudge. This indicates the agent is stuck
+// reading files without producing output, and further rounds would waste
+// tokens without progress. Distinct from ErrRoundLimitReached so the handler
+// can report the specific failure mode.
+var ErrReadLoopDetected = errors.New("agent: read-loop detected after nudge, terminating early")
+
 // Completer is the interface for making LLM completion calls. Both *llm.Client
 // and test mocks satisfy this interface.
 type Completer interface {
@@ -217,6 +224,14 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 					conversation = append(conversation, llm.UserMessage(nudgeMsg))
 					slog.Info("agent.read_loop_nudge", "nudge_count", nudgeCount, "round", round+1)
 					consecutiveReadOnlyRounds = 0
+				} else {
+					slog.Warn("agent.read_loop_terminated",
+						"round", round+1,
+						"nudge_count", nudgeCount,
+						"tokens_in", totalUsage.InputTokens,
+						"tokens_out", totalUsage.OutputTokens,
+					)
+					return lastText, totalUsage, round + 1, conversation, ErrReadLoopDetected
 				}
 			}
 		} else {

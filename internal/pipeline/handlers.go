@@ -49,12 +49,13 @@ func (h ConditionalHandler) Execute(node *dot.Node, _ *Context, _ *dot.Graph, _ 
 // BackendResult carries the LLM response and associated token usage from a
 // single codergen stage execution.
 type BackendResult struct {
-	Response     string
-	Usage        llm.Usage
-	Model        string
-	Rounds       int
-	Conversation []llm.Message
-	Exhausted    bool // true when the agent hit the round limit without completing
+	Response         string
+	Usage            llm.Usage
+	Model            string
+	Rounds           int
+	Conversation     []llm.Message
+	Exhausted        bool   // true when the agent hit the round limit or was terminated early
+	ExhaustionReason string // "round_limit" or "read_loop"; empty when Exhausted is false
 }
 
 // CodergenBackend is the interface for LLM execution backends.
@@ -153,8 +154,13 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 		}
 		if result.Exhausted {
 			_ = os.WriteFile(filepath.Join(stageDir, "response.md"), []byte(responseText), 0o644)
-			reason := fmt.Sprintf("agent exhausted round limit (%d) without completing task", result.Rounds)
-			slog.Warn("pipeline.stage.exhausted", "node", node.ID, "rounds", result.Rounds)
+			var reason string
+			if result.ExhaustionReason == "read_loop" {
+				reason = fmt.Sprintf("agent terminated: persistent read-loop detected after %d rounds", result.Rounds)
+			} else {
+				reason = fmt.Sprintf("agent exhausted round limit (%d) without completing task", result.Rounds)
+			}
+			slog.Warn("pipeline.stage.exhausted", "node", node.ID, "rounds", result.Rounds, "reason", result.ExhaustionReason)
 			outcome := Outcome{
 				Status:        StatusFail,
 				FailureReason: reason,

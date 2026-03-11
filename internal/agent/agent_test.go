@@ -245,8 +245,43 @@ func (m *infiniteToolCallCompleter) Complete(_ context.Context, _ llm.Request) (
 	}, nil
 }
 
+// mixedToolCallCompleter alternates between read_file and write_file so the
+// read-loop detector never fires, allowing the round limit to be reached.
+type mixedToolCallCompleter struct {
+	callCount int
+}
+
+func (m *mixedToolCallCompleter) Complete(_ context.Context, _ llm.Request) (llm.Response, error) {
+	m.callCount++
+	toolName := "read_file"
+	argsKey := "file_path"
+	if m.callCount%5 == 0 {
+		toolName = "write_file"
+		argsKey = "file_path"
+	}
+	args, _ := json.Marshal(map[string]string{argsKey: "file.txt"})
+	return llm.Response{
+		Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Parts: []llm.ContentPart{
+				{Kind: llm.KindText, Text: "working..."},
+				{
+					Kind: llm.KindToolCall,
+					ToolCall: &llm.ToolCall{
+						ID:        fmt.Sprintf("call_%d", m.callCount),
+						Name:      toolName,
+						Arguments: args,
+					},
+				},
+			},
+		},
+		FinishReason: llm.FinishReason{Reason: "tool_calls"},
+		Usage:        llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+	}, nil
+}
+
 func TestRunTaskCapture_RoundLimitReached(t *testing.T) {
-	mock := &infiniteToolCallCompleter{}
+	mock := &mixedToolCallCompleter{}
 
 	text, usage, rounds, conversation, err := RunTaskCapture(
 		context.Background(), mock, "test-model", "do infinite work", t.TempDir(), 0,
@@ -310,15 +345,17 @@ func TestIsReadOnlyRound(t *testing.T) {
 func TestRunTaskCapture_ReadLoopDetection(t *testing.T) {
 	mock := &infiniteToolCallCompleter{}
 
-	_, _, _, _, err := RunTaskCapture(
-		context.Background(), mock, "test-model", "analyze code", t.TempDir(), 10,
+	_, _, rounds, _, err := RunTaskCapture(
+		context.Background(), mock, "test-model", "analyze code", t.TempDir(), 20,
 	)
 
-	if !errors.Is(err, ErrRoundLimitReached) {
-		t.Fatalf("expected ErrRoundLimitReached, got: %v", err)
+	// With C4 in place, a persistent read-loop now terminates early with
+	// ErrReadLoopDetected instead of hitting the round limit.
+	if !errors.Is(err, ErrReadLoopDetected) {
+		t.Fatalf("expected ErrReadLoopDetected, got: %v", err)
 	}
-	if mock.callCount != 10 {
-		t.Errorf("expected 10 LLM calls (all rounds should run), got %d", mock.callCount)
+	if rounds != 10 {
+		t.Errorf("expected termination at round 10 (nudge at 5, terminate at 10), got %d", rounds)
 	}
 }
 
@@ -352,17 +389,17 @@ func (m *capturingReadCompleter) Complete(_ context.Context, req llm.Request) (l
 func TestRunTaskCapture_NudgeInjection(t *testing.T) {
 	mock := &capturingReadCompleter{}
 
-	// Run for 12 rounds: nudge fires at round 5, counter resets, then
-	// detection fires again at round 10 but no second nudge (maxNudges=1).
+	// Run with enough rounds to hit nudge at round 5. Use 8 rounds so
+	// the agent doesn't also hit the second detection event (which would
+	// trigger early termination via C4).
 	_, _, _, conversation, err := RunTaskCapture(
-		context.Background(), mock, "test-model", "analyze code", t.TempDir(), 12,
+		context.Background(), mock, "test-model", "analyze code", t.TempDir(), 8,
 	)
 
 	if !errors.Is(err, ErrRoundLimitReached) {
 		t.Fatalf("expected ErrRoundLimitReached, got: %v", err)
 	}
 
-	// Count nudge messages in the final conversation.
 	nudgeCount := 0
 	for _, msg := range conversation {
 		if msg.Role == llm.RoleUser {
@@ -382,8 +419,8 @@ func TestRunTaskCapture_NudgeInjection(t *testing.T) {
 	// Verify the nudge was present in the request sent to the LLM on the
 	// round after it was injected. The nudge fires after round 5 (index 4),
 	// so round 6 (index 5) should see it.
-	if len(mock.requests) < 7 {
-		t.Fatalf("expected at least 7 requests, got %d", len(mock.requests))
+	if len(mock.requests) < 6 {
+		t.Fatalf("expected at least 6 requests, got %d", len(mock.requests))
 	}
 	round6Req := mock.requests[5]
 	foundNudge := false
@@ -420,6 +457,39 @@ func TestRunTaskCapture_NudgeResetsCounter(t *testing.T) {
 	}
 	if nudgeCount != 1 {
 		t.Errorf("expected exactly 1 nudge (counter should reset), got %d", nudgeCount)
+	}
+}
+
+func TestRunTaskCapture_ReadLoopTermination(t *testing.T) {
+	// With 20 rounds available: nudge at round 5, counter resets, second
+	// detection at round 10 triggers early termination (maxNudges exhausted).
+	mock := &capturingReadCompleter{}
+
+	_, _, rounds, conversation, err := RunTaskCapture(
+		context.Background(), mock, "test-model", "analyze code", t.TempDir(), 20,
+	)
+
+	if !errors.Is(err, ErrReadLoopDetected) {
+		t.Fatalf("expected ErrReadLoopDetected, got: %v", err)
+	}
+	// Nudge fires at round 5, counter resets. Second detection at round 10
+	// triggers termination. The agent should stop at round 10, not 20.
+	if rounds != 10 {
+		t.Errorf("expected termination at round 10, got round %d", rounds)
+	}
+	if len(mock.requests) != 10 {
+		t.Errorf("expected 10 LLM calls, got %d", len(mock.requests))
+	}
+
+	// Conversation should contain exactly 1 nudge (from the first detection).
+	nudgeCount := 0
+	for _, msg := range conversation {
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Text(), "[PIPELINE ENGINE]") {
+			nudgeCount++
+		}
+	}
+	if nudgeCount != 1 {
+		t.Errorf("expected exactly 1 nudge before termination, got %d", nudgeCount)
 	}
 }
 

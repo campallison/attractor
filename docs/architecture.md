@@ -547,9 +547,11 @@ The agent loop tracks consecutive read-only rounds (rounds where all tool calls 
 1. A `agent.read_loop_detected` warning is logged
 2. A course-correction message is injected into the conversation as a `user` role message with a `[PIPELINE ENGINE]` prefix, reminding the agent to maintain `_scratch/` notes and begin writing deliverables
 3. The consecutive-round counter resets, giving the agent a chance to course-correct
-4. At most 1 nudge is issued per stage; further detection events are logged but not nudged (escalation to early termination is handled separately)
+4. At most 1 nudge is issued per stage; if the read-loop persists after the nudge and the threshold is reached again, the agent is terminated early with `ErrReadLoopDetected`
 
 The nudge does not count as a round toward the round limit. The `[PIPELINE ENGINE]` prefix distinguishes engine-injected messages from the original user prompt.
+
+Early termination produces a distinct `ErrReadLoopDetected` error (separate from `ErrRoundLimitReached`), allowing the pipeline handler to report "persistent read-loop detected" rather than a generic "round limit exhausted" failure. The handler includes the round count in the failure message for post-mortem analysis.
 
 #### Empty Stage Detection
 
