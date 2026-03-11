@@ -77,17 +77,22 @@ func ArchiveAndCleanScratch(workDir, logsRoot, nodeID string) (string, error) {
 	}
 
 	priorPath := filepath.Join(scratchPath, scratchPrior)
-	entries, _ := os.ReadDir(scratchPath)
+	entries, readErr := os.ReadDir(scratchPath)
+	if readErr != nil {
+		slog.Warn("pipeline.scratch.cleanup.readdir_error", "node", nodeID, "error", readErr)
+	}
 	for _, entry := range entries {
 		name := entry.Name()
 		if name == scratchPrior {
 			continue
 		}
-		_ = os.RemoveAll(filepath.Join(scratchPath, name))
+		if err := os.RemoveAll(filepath.Join(scratchPath, name)); err != nil {
+			slog.Warn("pipeline.scratch.cleanup.remove_error", "node", nodeID, "file", name, "error", err)
+		}
 	}
 
 	if summaryText != "" {
-		destName := nodeID + "_summary.md"
+		destName := sanitizeNodeID(nodeID) + "_summary.md"
 		destPath := filepath.Join(priorPath, destName)
 		if err := os.WriteFile(destPath, []byte(summaryText), 0o644); err != nil {
 			slog.Warn("pipeline.scratch.prior.write_error", "node", nodeID, "error", err)
@@ -100,6 +105,8 @@ func ArchiveAndCleanScratch(workDir, logsRoot, nodeID string) (string, error) {
 }
 
 // copyDir recursively copies src to dst. It creates dst if it doesn't exist.
+// Symlinks are skipped to prevent agents from using symlinks to exfiltrate
+// files outside the work directory into the archive.
 func copyDir(src, dst string) error {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return err
@@ -108,17 +115,25 @@ func copyDir(src, dst string) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			return infoErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			slog.Debug("pipeline.scratch.copy.skip_symlink", "path", path)
+			return nil
+		}
+		rel, relErr := filepath.Rel(src, path)
+		if relErr != nil {
+			return relErr
 		}
 		target := filepath.Join(dst, rel)
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
 		}
 		return os.WriteFile(target, data, 0o644)
 	})

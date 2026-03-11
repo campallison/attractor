@@ -98,7 +98,8 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	_ = os.WriteFile(filepath.Join(stageDir, "prompt.md"), []byte(prompt), 0o644)
 
 	// Scratch lifecycle: set up _scratch/ before the agent runs.
-	if h.WorkDir != "" && h.Backend != nil {
+	// WorkDir is intentionally left empty in simulate mode to skip scratch.
+	if h.WorkDir != "" {
 		completedRaw := ctx.GetString("completed_stages")
 		var completed []string
 		if completedRaw != "" {
@@ -114,8 +115,8 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 		if err := SetupScratch(h.WorkDir, node.ID, completed, desc); err != nil {
 			slog.Warn("pipeline.scratch.setup.error", "node", node.ID, "error", err)
 		}
-	} else if h.Backend == nil {
-		slog.Info("pipeline.scratch.skipped", "node", node.ID, "reason", "simulate mode")
+	} else {
+		slog.Info("pipeline.scratch.skipped", "node", node.ID, "reason", "no work dir (simulate mode)")
 	}
 
 	var responseText string
