@@ -582,6 +582,8 @@ The engine can snapshot the work directory before and after a stage runs to prod
 
 `DiffSnapshots` compares a before/after pair of snapshots, categorizing files as added, removed, modified (size changed), or unchanged. The resulting `FileDiff` struct provides a human-readable `String()` method suitable for logging and prompt injection.
 
+The `CodergenHandler` takes a snapshot before and after each stage's agent execution. The diff is logged as a structured `slog` message and written to `filesystem_diff.txt` in the stage's log directory for post-mortem analysis. This ground-truth signal also enhances C3's empty output detection: when the conversation reports no file writes but the filesystem shows changes, the engine logs a distinct informational message rather than the stronger empty-output warning. In simulate mode, snapshots are skipped (no work directory).
+
 #### Context
 
 Thread-safe key-value store (`sync.RWMutex`) shared across all nodes during a run:

@@ -1179,6 +1179,195 @@ func (b conversationBackend) Run(node *dot.Node, _ string, _ *Context) (BackendR
 	}, nil
 }
 
+// --- Filesystem observation tests ---
+
+// fileWritingBackend simulates an agent that creates real files on disk.
+type fileWritingBackend struct {
+	workDir string
+	files   map[string]string // relative path -> content
+}
+
+func (b fileWritingBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {
+	var msgs []llm.Message
+	i := 0
+	for relPath, content := range b.files {
+		fullPath := filepath.Join(b.workDir, relPath)
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			return BackendResult{}, err
+		}
+		if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+			return BackendResult{}, err
+		}
+		callID := fmt.Sprintf("call_%d", i)
+		msgs = append(msgs, llm.Message{
+			Role: llm.RoleAssistant,
+			Parts: []llm.ContentPart{{
+				Kind: llm.KindToolCall,
+				ToolCall: &llm.ToolCall{
+					ID:        callID,
+					Name:      "write_file",
+					Arguments: json.RawMessage(fmt.Sprintf(`{"path":%q,"content":%q}`, relPath, content)),
+				},
+			}},
+		})
+		i++
+	}
+	return BackendResult{
+		Response:     "wrote files for " + node.ID,
+		Usage:        llm.Usage{InputTokens: 1000, OutputTokens: 200, TotalTokens: 1200},
+		Model:        "test-model",
+		Rounds:       2,
+		Conversation: msgs,
+	}, nil
+}
+
+func TestCodergenHandler_FilesystemDiffWritten(t *testing.T) {
+	logsRoot := t.TempDir()
+	workDir := t.TempDir()
+
+	// Pre-existing file in work dir.
+	writeFile(t, workDir, "existing.go", "package main")
+
+	backend := fileWritingBackend{
+		workDir: workDir,
+		files: map[string]string{
+			"new.go":          "package new",
+			"internal/api.go": "package internal",
+		},
+	}
+	h := CodergenHandler{Backend: backend, WorkDir: workDir}
+	node := &dot.Node{ID: "scaffold", Attrs: map[string]string{
+		"shape":  "box",
+		"prompt": "Scaffold the project",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	out := h.Execute(node, NewContext(), g, logsRoot)
+	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
+		t.Fatalf("status mismatch (-want +got):\n%s", diff)
+	}
+
+	// Verify filesystem_diff.txt was written.
+	diffPath := filepath.Join(logsRoot, "scaffold", "filesystem_diff.txt")
+	diffData, err := os.ReadFile(diffPath)
+	if err != nil {
+		t.Fatalf("filesystem_diff.txt not written: %v", err)
+	}
+	diffStr := string(diffData)
+	if !strings.Contains(diffStr, "new.go") {
+		t.Errorf("diff should mention new.go, got: %s", diffStr)
+	}
+	if !strings.Contains(diffStr, "internal/api.go") {
+		t.Errorf("diff should mention internal/api.go, got: %s", diffStr)
+	}
+	if !strings.Contains(diffStr, "Added") {
+		t.Error("diff should show Added section")
+	}
+}
+
+func TestCodergenHandler_FilesystemDiffEmpty(t *testing.T) {
+	logsRoot := t.TempDir()
+	workDir := t.TempDir()
+
+	// Backend that doesn't write any real files.
+	h := CodergenHandler{Backend: readOnlyConversationBackend{}, WorkDir: workDir}
+	node := &dot.Node{ID: "analyze", Attrs: map[string]string{
+		"shape":  "box",
+		"prompt": "Analyze",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	out := h.Execute(node, NewContext(), g, logsRoot)
+	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
+		t.Fatalf("status mismatch (-want +got):\n%s", diff)
+	}
+
+	diffPath := filepath.Join(logsRoot, "analyze", "filesystem_diff.txt")
+	diffData, err := os.ReadFile(diffPath)
+	if err != nil {
+		t.Fatalf("filesystem_diff.txt not written: %v", err)
+	}
+	if diff := cmp.Diff("(no filesystem changes)", string(diffData)); diff != "" {
+		t.Errorf("empty diff mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestCodergenHandler_SimulateMode_NoSnapshot(t *testing.T) {
+	logsRoot := t.TempDir()
+
+	// WorkDir is empty in simulate mode — no snapshots should be taken.
+	h := CodergenHandler{Backend: nil, WorkDir: ""}
+	node := &dot.Node{ID: "sim_stage", Attrs: map[string]string{
+		"shape":  "box",
+		"prompt": "Simulate",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	out := h.Execute(node, NewContext(), g, logsRoot)
+	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
+		t.Fatalf("status mismatch (-want +got):\n%s", diff)
+	}
+
+	diffPath := filepath.Join(logsRoot, "sim_stage", "filesystem_diff.txt")
+	if _, err := os.Stat(diffPath); err == nil {
+		t.Error("filesystem_diff.txt should not be written in simulate mode")
+	}
+}
+
+func TestCodergenHandler_EmptyConversationButFSChanged(t *testing.T) {
+	logsRoot := t.TempDir()
+	workDir := t.TempDir()
+
+	// Backend writes files to disk but returns no write_file tool calls in
+	// the conversation. This tests the case where filesystem observation
+	// catches changes the conversation-based detection misses.
+	backend := &diskOnlyBackend{workDir: workDir}
+	h := CodergenHandler{Backend: backend, WorkDir: workDir}
+	node := &dot.Node{ID: "sneaky", Attrs: map[string]string{
+		"shape":  "box",
+		"prompt": "Do work",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	out := h.Execute(node, NewContext(), g, logsRoot)
+	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
+		t.Fatalf("status mismatch (-want +got):\n%s", diff)
+	}
+
+	// The filesystem diff should show changes even though conversation is empty.
+	diffPath := filepath.Join(logsRoot, "sneaky", "filesystem_diff.txt")
+	diffData, err := os.ReadFile(diffPath)
+	if err != nil {
+		t.Fatalf("filesystem_diff.txt not written: %v", err)
+	}
+	if strings.Contains(string(diffData), "(no filesystem changes)") {
+		t.Error("filesystem diff should show changes even though conversation had no write calls")
+	}
+	if !strings.Contains(string(diffData), "secret.go") {
+		t.Errorf("diff should mention secret.go, got: %s", string(diffData))
+	}
+}
+
+// diskOnlyBackend writes files to disk but returns a conversation with no
+// write_file tool calls — simulating unconventional file creation.
+type diskOnlyBackend struct {
+	workDir string
+}
+
+func (b *diskOnlyBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {
+	// Write a file directly to disk (via shell tool or similar).
+	if err := os.WriteFile(filepath.Join(b.workDir, "secret.go"), []byte("package secret"), 0o644); err != nil {
+		return BackendResult{}, err
+	}
+	return BackendResult{
+		Response:     "I created files using the shell tool.",
+		Usage:        llm.Usage{InputTokens: 500, OutputTokens: 100, TotalTokens: 600},
+		Model:        "test-model",
+		Rounds:       1,
+		Conversation: []llm.Message{}, // no write_file calls
+	}, nil
+}
+
 func TestCodergenHandler_ContextCarryover(t *testing.T) {
 	logsRoot := t.TempDir()
 	g := &dot.Graph{Attrs: map[string]string{"goal": "build an app"}}

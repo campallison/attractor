@@ -125,6 +125,18 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 		slog.Info("pipeline.scratch.skipped", "node", node.ID, "reason", "no work dir (simulate mode)")
 	}
 
+	// Filesystem observation: snapshot before agent runs.
+	var beforeSnap map[string]int64
+	if h.WorkDir != "" {
+		var snapErr error
+		beforeSnap, snapErr = SnapshotDir(h.WorkDir)
+		if snapErr != nil {
+			slog.Warn("pipeline.snapshot.before.error", "node", node.ID, "error", snapErr)
+		} else {
+			slog.Info("pipeline.snapshot.before", "node", node.ID, "files", len(beforeSnap))
+		}
+	}
+
 	var responseText string
 	var stageUsage *StageUsage
 	var lastConversation []llm.Message
@@ -240,6 +252,23 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	_ = os.WriteFile(filepath.Join(stageDir, "response.md"), []byte(responseText), 0o644)
 	slog.Info("pipeline.stage.done", "node", node.ID, "response_len", len(responseText))
 
+	// Filesystem observation: snapshot after agent runs and compute diff.
+	var fsDiff *FileDiff
+	if h.WorkDir != "" && beforeSnap != nil {
+		afterSnap, snapErr := SnapshotDir(h.WorkDir)
+		if snapErr != nil {
+			slog.Warn("pipeline.snapshot.after.error", "node", node.ID, "error", snapErr)
+		} else {
+			diff := DiffSnapshots(beforeSnap, afterSnap)
+			fsDiff = &diff
+			slog.Info("pipeline.snapshot.diff", "node", node.ID,
+				"added", len(diff.Added), "removed", len(diff.Removed),
+				"modified", len(diff.Modified), "unchanged", diff.Unchanged)
+			diffStr := diff.String()
+			_ = os.WriteFile(filepath.Join(stageDir, "filesystem_diff.txt"), []byte(diffStr), 0o644)
+		}
+	}
+
 	// Scratch lifecycle: archive, read summary, clean up.
 	var scratchSummary string
 	if h.WorkDir != "" && h.Backend != nil {
@@ -252,8 +281,19 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 
 	files := extractFileList(lastConversation)
 
-	if h.Backend != nil && len(files) == 0 && !node.AllowEmptyOutput() {
-		slog.Warn("pipeline.stage.empty_output", "node", node.ID)
+	// C3: Empty output detection, enhanced with filesystem observation.
+	// The conversation-based file list may miss files if the agent used
+	// unconventional tool names or patterns. The filesystem diff provides
+	// ground truth. We warn if both signals agree that nothing was produced.
+	if h.Backend != nil && !node.AllowEmptyOutput() {
+		conversationEmpty := len(files) == 0
+		fsEmpty := fsDiff == nil || fsDiff.IsEmpty()
+		if conversationEmpty && fsEmpty {
+			slog.Warn("pipeline.stage.empty_output", "node", node.ID, "source", "both")
+		} else if conversationEmpty && !fsEmpty {
+			slog.Info("pipeline.stage.empty_conversation_but_fs_changed", "node", node.ID,
+				"fs_added", len(fsDiff.Added), "fs_modified", len(fsDiff.Modified))
+		}
 	}
 
 	stageSummary := buildStageSummary(node.ID, files, responseText, scratchSummary)
