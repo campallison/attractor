@@ -149,6 +149,7 @@ The runner performs a pre-flight checklist (workdir, API key, Docker, model vali
 | Context Carryover | Stage summaries injected into downstream prompts | Reduces redundant file reads by giving each stage a structured summary of what prior stages produced |
 | Working Memory | `_scratch/` directory with engine lifecycle | Agents maintain working notes; engine seeds context, verifies summary, archives, and cleans between stages |
 | Behavioral Detection | Read-loop detection, nudge, escalation, empty-output | Detects 5+ consecutive read-only rounds, injects a course-correction nudge, and terminates the stage early if the pattern persists after nudging; warns when a stage produces no deliverable files |
+| Filesystem Observation | Directory snapshots + diff between stages | Ground-truth detection of what files an agent added, removed, or modified — independent of conversation reports |
 | Structured Logging | `log/slog` multi-handler | Always-on INFO to terminal, DEBUG to JSON file; no toggle flag |
 
 ## Spec Reference

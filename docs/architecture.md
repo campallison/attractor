@@ -574,6 +574,14 @@ The engine manages a `_scratch/` directory in the work directory as persistent w
 
 In simulate mode, scratch setup and cleanup are skipped. The `_scratch/` directory is listed in `.gitignore` to prevent agents from committing scratch artifacts.
 
+#### Filesystem Observation
+
+The engine can snapshot the work directory before and after a stage runs to produce a structured diff of filesystem changes. This provides ground-truth data about what files an agent created, modified, or removed — independent of what the agent reported in its conversation.
+
+`SnapshotDir` walks the work directory, recording each regular file's relative path and size. Directories that are engine-managed, version-controlled, or contain dependencies are excluded: `_scratch/`, `.attractor-logs/`, `.git/`, `node_modules/`, `vendor/`. Symlinks are skipped to prevent misrepresentation of directory contents.
+
+`DiffSnapshots` compares a before/after pair of snapshots, categorizing files as added, removed, modified (size changed), or unchanged. The resulting `FileDiff` struct provides a human-readable `String()` method suitable for logging and prompt injection.
+
 #### Context
 
 Thread-safe key-value store (`sync.RWMutex`) shared across all nodes during a run:
@@ -707,6 +715,7 @@ Each pipeline execution produces:
 | `pipeline/handler.go` | Handler interface, HandlerRegistry, shape mapping |
 | `pipeline/handlers.go` | Start, Exit, Conditional, Codergen handlers (with build gate and scratch lifecycle), CheckRunner, BackendResult, backends |
 | `pipeline/scratch.go` | Scratch directory lifecycle: SetupScratch, ArchiveAndCleanScratch, copyDir |
+| `pipeline/snapshot.go` | Filesystem observation: SnapshotDir, DiffSnapshots, FileDiff |
 | `pipeline/engine.go` | Core loop, edge selection, goal gates, retry, backoff, usage aggregation, failure halting |
 | `pipeline/checkpoint.go` | JSON checkpoint save/load/resume |
 | `pipeline/validate.go` | 16 lint rules, Diagnostic model, ValidateOrError |
