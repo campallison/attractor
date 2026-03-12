@@ -818,6 +818,7 @@ func TestBuildStageSummary(t *testing.T) {
 		files          []string
 		response       string
 		scratchSummary string
+		fsDiffStr      string
 		checks         func(t *testing.T, got string)
 	}{
 		{
@@ -915,11 +916,71 @@ func TestBuildStageSummary(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:     "with filesystem diff",
+			nodeID:   "scaffold",
+			files:    []string{"main.go"},
+			response: "Done.",
+			fsDiffStr: "Added (2):\n  + main.go (100 bytes)\n  + internal/server.go (250 bytes)",
+			checks: func(t *testing.T, got string) {
+				if !strings.Contains(got, "Filesystem changes:") {
+					t.Error("missing filesystem changes section")
+				}
+				if !strings.Contains(got, "main.go (100 bytes)") {
+					t.Error("missing added file in diff")
+				}
+				if !strings.Contains(got, "internal/server.go (250 bytes)") {
+					t.Error("missing second added file in diff")
+				}
+			},
+		},
+		{
+			name:      "no filesystem changes omitted",
+			nodeID:    "analyze",
+			files:     nil,
+			response:  "Done.",
+			fsDiffStr: "(no filesystem changes)",
+			checks: func(t *testing.T, got string) {
+				if strings.Contains(got, "Filesystem changes") {
+					t.Error("should not contain Filesystem changes for empty diff")
+				}
+				if strings.Contains(got, "(no filesystem changes)") {
+					t.Error("should not contain the empty-diff sentinel string")
+				}
+			},
+		},
+		{
+			name:      "empty fsDiffStr omitted",
+			nodeID:    "sim",
+			files:     nil,
+			response:  "Done.",
+			fsDiffStr: "",
+			checks: func(t *testing.T, got string) {
+				if strings.Contains(got, "Filesystem changes") {
+					t.Error("should not contain Filesystem changes when fsDiffStr is empty")
+				}
+			},
+		},
+		{
+			name:      "long filesystem diff is truncated",
+			nodeID:    "big",
+			files:     nil,
+			response:  "Done.",
+			fsDiffStr: "Added (1):\n  + " + strings.Repeat("x", 3000),
+			checks: func(t *testing.T, got string) {
+				if !strings.Contains(got, "Filesystem changes:") {
+					t.Error("missing filesystem changes section")
+				}
+				if !strings.Contains(got, "...") {
+					t.Error("long filesystem diff should be truncated")
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := buildStageSummary(tc.nodeID, tc.files, tc.response, tc.scratchSummary)
+			got := buildStageSummary(tc.nodeID, tc.files, tc.response, tc.scratchSummary, tc.fsDiffStr)
 			tc.checks(t, got)
 		})
 	}

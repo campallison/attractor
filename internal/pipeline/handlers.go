@@ -306,7 +306,11 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 		}
 	}
 
-	stageSummary := buildStageSummary(node.ID, files, responseText, scratchSummary)
+	var fsDiffStr string
+	if fsDiff != nil {
+		fsDiffStr = fsDiff.String()
+	}
+	stageSummary := buildStageSummary(node.ID, files, responseText, scratchSummary, fsDiffStr)
 
 	completedStages := ctx.GetString("completed_stages")
 	if completedStages != "" {
@@ -337,6 +341,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 const (
 	summaryResponseMaxLen = 300
 	scratchSummaryMaxLen  = 1000
+	fsDiffMaxLen          = 2000
 )
 
 // extractFileList scans a conversation for write_file and edit_file tool calls
@@ -390,13 +395,21 @@ func isScratchPath(path string) bool {
 
 // buildStageSummary formats a concise summary of a completed stage for
 // injection into downstream prompts. When scratchSummary is non-empty, it
-// includes the agent's synthesized notes from _scratch/SUMMARY.md.
-func buildStageSummary(nodeID string, files []string, response, scratchSummary string) string {
+// includes the agent's synthesized notes from _scratch/SUMMARY.md. When
+// fsDiffStr is non-empty, it includes the ground-truth filesystem diff.
+func buildStageSummary(nodeID string, files []string, response, scratchSummary, fsDiffStr string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[Stage: %s] completed.", nodeID)
 	if len(files) > 0 {
 		b.WriteString("\nFiles created/modified: ")
 		b.WriteString(strings.Join(files, ", "))
+	}
+	if fsDiffStr != "" && fsDiffStr != "(no filesystem changes)" {
+		diff := fsDiffStr
+		if len(diff) > fsDiffMaxLen {
+			diff = diff[:fsDiffMaxLen] + "..."
+		}
+		fmt.Fprintf(&b, "\nFilesystem changes:\n%s", diff)
 	}
 	if scratchSummary != "" {
 		summary := scratchSummary

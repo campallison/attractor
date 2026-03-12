@@ -559,7 +559,7 @@ After a codergen stage completes successfully, the handler checks whether any de
 
 #### Context Carryover Between Stages
 
-After each successful codergen stage, the handler extracts a structured summary: which files were created/modified (parsed from tool calls in the conversation) and a truncated response snippet. Files inside `_scratch/` are excluded from the file list since they are intermediate working notes, not deliverables. When a stage produces a `_scratch/SUMMARY.md`, its contents are included in the stage summary as "Stage notes," giving downstream stages the agent's synthesized findings rather than raw file paths.
+After each successful codergen stage, the handler extracts a structured summary: which files were created/modified (parsed from tool calls in the conversation), the filesystem diff (ground-truth file changes from snapshots), a truncated response snippet, and scratch notes. Files inside `_scratch/` are excluded from the conversation file list since they are intermediate working notes, not deliverables. When a stage produces a `_scratch/SUMMARY.md`, its contents are included as "Stage notes." When filesystem observation detected changes, the diff is included as "Filesystem changes," giving downstream stages an accurate picture of what was actually written to disk. Long diffs are truncated to prevent prompt bloat.
 
 These summaries are stored in the pipeline `Context` under `stage_summary:{nodeID}` keys. Downstream codergen stages automatically receive prior summaries prepended to their prompts. If a prompt contains `$prior_context`, the summaries replace that variable; otherwise they are auto-prepended. This gives each stage awareness of what earlier stages produced, reducing redundant file reads.
 
