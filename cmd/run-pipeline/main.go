@@ -3,7 +3,7 @@
 // It parses the DOT pipeline file, validates it, runs pre-flight checks,
 // and executes it with a real LLM backend (or a simulated one for testing).
 //
-// Usage: go run ./cmd/run-pipeline [-pipeline FILE] [-workdir DIR] [-budget TOKENS] [-simulate]
+// Usage: go run ./cmd/run-pipeline -pipeline FILE -workdir DIR [-budget TOKENS] [-simulate]
 //
 // Requires OPENROUTER_API_KEY in .env or environment (not needed with -simulate).
 package main
@@ -31,16 +31,14 @@ import (
 
 const (
 	defaultModel        = "anthropic/claude-opus-4.6"
-	defaultPipeline     = "pipelines/retroquest-returns-v3.dot"
-	defaultWorkDir      = "/Users/allison/workspace/retroquest-returns-v3"
 	defaultBudgetTokens = 10_000_000 // safety net; actual usage should be well below with compression + model tiering
 	defaultDockerImage  = "golang:1.26"
 )
 
 func main() {
-	pipelineFile := flag.String("pipeline", defaultPipeline, "path to DOT pipeline file")
+	pipelineFile := flag.String("pipeline", "", "path to DOT pipeline file (required)")
 	budgetTokens := flag.Int("budget", defaultBudgetTokens, "max total tokens before stopping (0 = no limit)")
-	workDir := flag.String("workdir", defaultWorkDir, "working directory for the agent")
+	workDir := flag.String("workdir", "", "working directory for the agent (required)")
 	model := flag.String("model", defaultModel, "default LLM model")
 	modelOverride := flag.String("model-override", "", "override ALL stage models with this model (useful for cheap test runs)")
 	zdr := flag.Bool("zdr", false, "enforce Zero Data Retention routing on OpenRouter")
@@ -49,6 +47,17 @@ func main() {
 	noDocker := flag.Bool("no-docker", false, "skip Docker container setup (shell commands will fail)")
 	simulate := flag.Bool("simulate", false, "use SimulatedBackend instead of real LLM (no API key or Docker needed)")
 	flag.Parse()
+
+	if *pipelineFile == "" {
+		fmt.Fprintln(os.Stderr, "Error: -pipeline flag is required")
+		flag.Usage()
+		os.Exit(1)
+	}
+	if *workDir == "" {
+		fmt.Fprintln(os.Stderr, "Error: -workdir flag is required")
+		flag.Usage()
+		os.Exit(1)
+	}
 
 	loadEnv()
 
