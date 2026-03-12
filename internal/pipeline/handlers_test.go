@@ -1314,6 +1314,36 @@ func TestCodergenHandler_SimulateMode_NoSnapshot(t *testing.T) {
 	}
 }
 
+func TestCodergenHandler_ExhaustedWithDiff(t *testing.T) {
+	logsRoot := t.TempDir()
+	workDir := t.TempDir()
+	writeFile(t, workDir, "existing.go", "package main")
+
+	// The exhausted backend doesn't write files, but it has a work dir, so
+	// snapshots should still be taken and a diff should be produced.
+	h := CodergenHandler{Backend: exhaustedBackend{rounds: 50}, WorkDir: workDir}
+	node := &dot.Node{ID: "exhausted_snap", Attrs: map[string]string{
+		"shape":  "box",
+		"prompt": "Do work",
+	}}
+	g := &dot.Graph{Attrs: map[string]string{}}
+
+	out := h.Execute(node, NewContext(), g, logsRoot)
+	if diff := cmp.Diff(StatusFail, out.Status); diff != "" {
+		t.Fatalf("status mismatch (-want +got):\n%s", diff)
+	}
+
+	// Even though the stage failed, filesystem_diff.txt should be written.
+	diffPath := filepath.Join(logsRoot, "exhausted_snap", "filesystem_diff.txt")
+	diffData, err := os.ReadFile(diffPath)
+	if err != nil {
+		t.Fatalf("filesystem_diff.txt should be written on exhaustion: %v", err)
+	}
+	if diff := cmp.Diff("(no filesystem changes)", string(diffData)); diff != "" {
+		t.Errorf("diff content mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestCodergenHandler_EmptyConversationButFSChanged(t *testing.T) {
 	logsRoot := t.TempDir()
 	workDir := t.TempDir()

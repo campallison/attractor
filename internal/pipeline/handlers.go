@@ -137,6 +137,27 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 		}
 	}
 
+	// captureFilesystemDiff takes the after-snapshot, computes the diff against
+	// beforeSnap, writes it to the stage log directory, and returns it. Called
+	// on both success and failure paths so post-mortem analysis always has
+	// filesystem data.
+	captureFilesystemDiff := func() *FileDiff {
+		if h.WorkDir == "" || beforeSnap == nil {
+			return nil
+		}
+		afterSnap, snapErr := SnapshotDir(h.WorkDir)
+		if snapErr != nil {
+			slog.Warn("pipeline.snapshot.after.error", "node", node.ID, "error", snapErr)
+			return nil
+		}
+		diff := DiffSnapshots(beforeSnap, afterSnap)
+		slog.Info("pipeline.snapshot.diff", "node", node.ID,
+			"added", len(diff.Added), "removed", len(diff.Removed),
+			"modified", len(diff.Modified), "unchanged", diff.Unchanged)
+		_ = os.WriteFile(filepath.Join(stageDir, "filesystem_diff.txt"), []byte(diff.String()), 0o644)
+		return &diff
+	}
+
 	var responseText string
 	var stageUsage *StageUsage
 	var lastConversation []llm.Message
@@ -171,6 +192,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 		}
 		if result.Exhausted {
 			_ = os.WriteFile(filepath.Join(stageDir, "response.md"), []byte(responseText), 0o644)
+			captureFilesystemDiff()
 			var reason string
 			if result.ExhaustionReason == ExhaustionReadLoop {
 				reason = fmt.Sprintf("agent terminated: persistent read-loop detected after %d rounds", result.Rounds)
@@ -201,6 +223,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 				_ = os.WriteFile(filepath.Join(stageDir, fmt.Sprintf("buildgate_attempt_%d.txt", attempt)), []byte(checkOutput), 0o644)
 
 				if attempt == maxAttempts {
+					captureFilesystemDiff()
 					reason := fmt.Sprintf("build gate failed after %d attempts: %s", maxAttempts, truncate(checkOutput, 200))
 					slog.Error("pipeline.buildgate.exhausted", "node", node.ID, "attempts", maxAttempts)
 					outcome := Outcome{
@@ -233,6 +256,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 				responseText = fixResult.Response
 
 				if fixResult.Exhausted {
+					captureFilesystemDiff()
 					reason := fmt.Sprintf("agent exhausted during build gate fix (attempt %d)", attempt)
 					slog.Warn("pipeline.buildgate.fix.exhausted", "node", node.ID, "attempt", attempt)
 					outcome := Outcome{
@@ -253,21 +277,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	slog.Info("pipeline.stage.done", "node", node.ID, "response_len", len(responseText))
 
 	// Filesystem observation: snapshot after agent runs and compute diff.
-	var fsDiff *FileDiff
-	if h.WorkDir != "" && beforeSnap != nil {
-		afterSnap, snapErr := SnapshotDir(h.WorkDir)
-		if snapErr != nil {
-			slog.Warn("pipeline.snapshot.after.error", "node", node.ID, "error", snapErr)
-		} else {
-			diff := DiffSnapshots(beforeSnap, afterSnap)
-			fsDiff = &diff
-			slog.Info("pipeline.snapshot.diff", "node", node.ID,
-				"added", len(diff.Added), "removed", len(diff.Removed),
-				"modified", len(diff.Modified), "unchanged", diff.Unchanged)
-			diffStr := diff.String()
-			_ = os.WriteFile(filepath.Join(stageDir, "filesystem_diff.txt"), []byte(diffStr), 0o644)
-		}
-	}
+	fsDiff := captureFilesystemDiff()
 
 	// Scratch lifecycle: archive, read summary, clean up.
 	var scratchSummary string
