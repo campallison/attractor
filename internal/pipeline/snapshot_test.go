@@ -86,6 +86,29 @@ func TestSnapshotDir_SkipsSymlinks(t *testing.T) {
 	}
 }
 
+func TestSnapshotDir_SkipsDirectorySymlinks(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "src/main.go", "package main")
+
+	target := filepath.Join(dir, "src")
+	link := filepath.Join(dir, "fake")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	snap, err := SnapshotDir(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := snap["src/main.go"]; !ok {
+		t.Error("expected src/main.go in snapshot")
+	}
+	if _, ok := snap["fake/main.go"]; ok {
+		t.Error("expected directory symlink contents to be excluded")
+	}
+}
+
 func TestSnapshotDir_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
 	snap, err := SnapshotDir(dir)
@@ -111,8 +134,8 @@ func TestDiffSnapshots_AddedRemovedModified(t *testing.T) {
 
 	diff := DiffSnapshots(before, after)
 
-	if diff := cmp.Diff(1, len(diff.Added)); diff != "" {
-		t.Errorf("added count (-want +got):\n%s", diff)
+	if d := cmp.Diff(1, len(diff.Added)); d != "" {
+		t.Errorf("added count (-want +got):\n%s", d)
 	}
 	if diff.Added[0].Path != "new.go" {
 		t.Errorf("expected added file 'new.go', got %q", diff.Added[0].Path)

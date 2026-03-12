@@ -92,21 +92,20 @@ func SnapshotDir(rootDir string) (map[string]int64, error) {
 			return nil
 		}
 
+		if d.Type()&os.ModeSymlink != 0 || !d.Type().IsRegular() {
+			return nil
+		}
+
 		info, infoErr := d.Info()
 		if infoErr != nil {
 			slog.Debug("pipeline.snapshot.info_error", "path", path, "error", infoErr)
 			return nil
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
+		rel, relErr := filepath.Rel(rootDir, path)
+		if relErr != nil {
 			return nil
 		}
-		if info.Mode().IsRegular() {
-			rel, relErr := filepath.Rel(rootDir, path)
-			if relErr != nil {
-				return nil
-			}
-			snapshot[rel] = info.Size()
-		}
+		snapshot[rel] = info.Size()
 		return nil
 	})
 	if err != nil {
