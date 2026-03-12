@@ -135,6 +135,8 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 		} else {
 			slog.Info("pipeline.snapshot.before", "node", node.ID, "files", len(beforeSnap))
 		}
+	} else {
+		slog.Info("pipeline.snapshot.skipped", "node", node.ID, "reason", "no work dir (simulate mode)")
 	}
 
 	// captureFilesystemDiff takes the after-snapshot, computes the diff against
