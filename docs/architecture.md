@@ -797,7 +797,7 @@ flowchart LR
 
 Three tables in `internal/store/schema.sql`, applied automatically via `CREATE TABLE IF NOT EXISTS`:
 
-- **`pipeline_runs`** — one row per pipeline execution. Captures timestamps, status, pipeline metadata, model configuration, token usage, and stage counts.
+- **`pipeline_runs`** — one row per pipeline execution. Captures timestamps, status, pipeline metadata, model configuration, token usage, and stage counts. Note: `stages_total` counts only task nodes (LLM-calling stages) while `stages_completed` counts all nodes the engine traversed (including structural nodes like start and conditional). These use different counting methodologies intentionally — see `docs/development-notes/stages-total-vs-completed.md` for rationale.
 - **`stage_results`** — one row per stage per run. Captures node ID, model, status, token usage, duration, filesystem diff counts, scratch summary presence, and build gate results.
 - **`stage_events`** — notable moments within a stage: `nudge_injected`, `read_loop_terminated`, `build_gate_pass`, `build_gate_fail`, `empty_output`. Each event has a type, optional round number, and detail text.
 
