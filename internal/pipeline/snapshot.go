@@ -41,7 +41,8 @@ func (d FileDiff) IsEmpty() bool {
 }
 
 // String returns a human-readable summary of the diff suitable for logging
-// and injection into downstream stage prompts.
+// and injection into downstream stage prompts. Paths are sanitized to strip
+// control characters, preventing prompt injection via malicious filenames.
 func (d FileDiff) String() string {
 	if d.IsEmpty() {
 		return "(no filesystem changes)"
@@ -51,25 +52,38 @@ func (d FileDiff) String() string {
 	if len(d.Added) > 0 {
 		fmt.Fprintf(&b, "Added (%d):\n", len(d.Added))
 		for _, f := range d.Added {
-			fmt.Fprintf(&b, "  + %s (%d bytes)\n", f.Path, f.Size)
+			fmt.Fprintf(&b, "  + %s (%d bytes)\n", sanitizePath(f.Path), f.Size)
 		}
 	}
 	if len(d.Removed) > 0 {
 		fmt.Fprintf(&b, "Removed (%d):\n", len(d.Removed))
 		for _, p := range d.Removed {
-			fmt.Fprintf(&b, "  - %s\n", p)
+			fmt.Fprintf(&b, "  - %s\n", sanitizePath(p))
 		}
 	}
 	if len(d.Modified) > 0 {
 		fmt.Fprintf(&b, "Modified (%d):\n", len(d.Modified))
 		for _, f := range d.Modified {
-			fmt.Fprintf(&b, "  ~ %s (%d bytes)\n", f.Path, f.Size)
+			fmt.Fprintf(&b, "  ~ %s (%d bytes)\n", sanitizePath(f.Path), f.Size)
 		}
 	}
 	if d.Unchanged > 0 {
 		fmt.Fprintf(&b, "Unchanged: %d files\n", d.Unchanged)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// sanitizePath strips control characters from a file path to prevent prompt
+// injection when paths are embedded in downstream stage prompts. Agents run
+// in a sandbox and could create files with newlines or other control chars
+// in their names.
+func sanitizePath(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // SnapshotDir walks rootDir and returns a map of relative file paths to their

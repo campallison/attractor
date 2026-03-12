@@ -229,6 +229,19 @@ func TestFileDiff_String_Empty(t *testing.T) {
 	}
 }
 
+func TestFileDiff_String_SanitizesControlChars(t *testing.T) {
+	diff := FileDiff{
+		Added: []FileEntry{{Path: "evil\nfile\rwith\x00chars", Size: 100}},
+	}
+	got := diff.String()
+	if strings.ContainsAny(got, "\n\r\x00") && strings.Contains(got, "evil\n") {
+		t.Error("control characters in path should be stripped")
+	}
+	if !strings.Contains(got, "evilfilewithchars") {
+		t.Errorf("sanitized path should have control chars removed, got: %s", got)
+	}
+}
+
 func TestFileDiff_String_WithChanges(t *testing.T) {
 	diff := FileDiff{
 		Added:     []FileEntry{{Path: "new.go", Size: 150}},

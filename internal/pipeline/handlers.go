@@ -307,7 +307,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	}
 
 	var fsDiffStr string
-	if fsDiff != nil {
+	if fsDiff != nil && !fsDiff.IsEmpty() {
 		fsDiffStr = fsDiff.String()
 	}
 	stageSummary := buildStageSummary(node.ID, files, responseText, scratchSummary, fsDiffStr)
@@ -404,7 +404,7 @@ func buildStageSummary(nodeID string, files []string, response, scratchSummary, 
 		b.WriteString("\nFiles created/modified: ")
 		b.WriteString(strings.Join(files, ", "))
 	}
-	if fsDiffStr != "" && fsDiffStr != "(no filesystem changes)" {
+	if fsDiffStr != "" {
 		diff := fsDiffStr
 		if len(diff) > fsDiffMaxLen {
 			diff = diff[:fsDiffMaxLen] + "..."

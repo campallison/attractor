@@ -939,13 +939,10 @@ func TestBuildStageSummary(t *testing.T) {
 			nodeID:    "analyze",
 			files:     nil,
 			response:  "Done.",
-			fsDiffStr: "(no filesystem changes)",
+			fsDiffStr: "",
 			checks: func(t *testing.T, got string) {
 				if strings.Contains(got, "Filesystem changes") {
-					t.Error("should not contain Filesystem changes for empty diff")
-				}
-				if strings.Contains(got, "(no filesystem changes)") {
-					t.Error("should not contain the empty-diff sentinel string")
+					t.Error("should not contain Filesystem changes when diff is empty")
 				}
 			},
 		},
