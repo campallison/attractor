@@ -19,6 +19,14 @@ func (s StageStatus) IsSuccess() bool {
 	return s == StatusSuccess || s == StatusPartialSuccess
 }
 
+// FileDiffCounts holds the aggregate counts from a filesystem snapshot diff.
+type FileDiffCounts struct {
+	Added     int
+	Modified  int
+	Removed   int
+	Unchanged int
+}
+
 // Outcome is the result of executing a node handler. It drives routing
 // decisions and context state updates.
 type Outcome struct {
@@ -29,6 +37,14 @@ type Outcome struct {
 	Notes            string
 	FailureReason    string
 	Usage            *StageUsage
+
+	ExhaustionReason      string         // ExhaustionRoundLimit, ExhaustionReadLoop, or empty
+	PromptLength          int            // length of the prompt sent to the agent
+	ResponseLength        int            // length of the final response text
+	ScratchSummaryProduced bool          // true if _scratch/SUMMARY.md was found
+	BuildGateAttempts     int            // number of build gate check attempts (0 if no gate)
+	BuildGatePassed       *bool          // nil if no build gate, true/false otherwise
+	FileDiffCounts        *FileDiffCounts // nil if no snapshot was captured
 }
 
 // StageUsage records token consumption for a single pipeline stage.

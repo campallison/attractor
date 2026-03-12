@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"math"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/campallison/attractor/internal/dot"
+	"github.com/campallison/attractor/internal/store"
+	"github.com/google/uuid"
 )
 
 // RunConfig holds the configuration for a pipeline run.
@@ -21,6 +24,9 @@ type RunConfig struct {
 	Registry        *HandlerRegistry
 	MaxIterations   int // 0 means use default (1000)
 	MaxBudgetTokens int // 0 means no limit
+
+	Recorder store.RunRecorder // nil-safe: uses NopRecorder when nil
+	RunID    uuid.UUID         // set by caller after StartRun; zero means no recording
 }
 
 // RunResult is the final outcome of a pipeline execution.
@@ -52,6 +58,12 @@ func Run(cfg RunConfig) (RunResult, error) {
 	nodeOutcomes := make(map[string]Outcome)
 	nodeRetries := make(map[string]int)
 	stageUsages := make(map[string]*StageUsage)
+	stageSequence := 0
+
+	recorder := cfg.Recorder
+	if recorder == nil {
+		recorder = store.NopRecorder{}
+	}
 
 	startNode := g.FindStartNode()
 	if startNode == nil {
@@ -135,6 +147,7 @@ func Run(cfg RunConfig) (RunResult, error) {
 		// Step 3: Record completion.
 		completedNodes = append(completedNodes, current.ID)
 		nodeOutcomes[current.ID] = outcome
+		stageSequence++
 
 		if outcome.Usage != nil {
 			stageUsages[current.ID] = outcome.Usage
@@ -158,6 +171,9 @@ func Run(cfg RunConfig) (RunResult, error) {
 			logAttrs = append(logAttrs, "failure_reason", outcome.FailureReason)
 			slog.Warn("pipeline.node.done", logAttrs...)
 		}
+
+		// Record stage to observability database.
+		recordStageResult(recorder, cfg.RunID, current, outcome, stageSequence, nodeDuration)
 
 		// Budget threshold warnings.
 		if cfg.MaxBudgetTokens > 0 {
@@ -482,5 +498,90 @@ func backoffDelay(attempt int) time.Duration {
 func mirrorGraphAttributes(g *dot.Graph, ctx *Context) {
 	for k, v := range g.Attrs {
 		ctx.Set("graph."+k, v)
+	}
+}
+
+// recordStageResult persists a stage outcome and any derived events to the
+// observability database. Errors are logged but do not halt the pipeline.
+func recordStageResult(rec store.RunRecorder, runID uuid.UUID, node *dot.Node, outcome Outcome, seq int, dur time.Duration) {
+	bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sr := store.StageResult{
+		RunID:                  runID,
+		NodeID:                 node.ID,
+		Sequence:               seq,
+		Status:                 string(outcome.Status),
+		FailureReason:          outcome.FailureReason,
+		ExhaustionReason:       outcome.ExhaustionReason,
+		DurationMs:             int(dur.Milliseconds()),
+		PromptLength:           outcome.PromptLength,
+		ResponseLength:         outcome.ResponseLength,
+		ScratchSummaryProduced: outcome.ScratchSummaryProduced,
+		BuildGateAttempts:      outcome.BuildGateAttempts,
+		BuildGatePassed:        outcome.BuildGatePassed,
+	}
+	if outcome.Usage != nil {
+		sr.Model = outcome.Usage.Model
+		sr.Rounds = outcome.Usage.Rounds
+		sr.InputTokens = outcome.Usage.InputTokens
+		sr.OutputTokens = outcome.Usage.OutputTokens
+		sr.TotalTokens = outcome.Usage.TotalTokens
+	}
+	if outcome.FileDiffCounts != nil {
+		sr.FilesAdded = outcome.FileDiffCounts.Added
+		sr.FilesModified = outcome.FileDiffCounts.Modified
+		sr.FilesRemoved = outcome.FileDiffCounts.Removed
+		sr.FilesUnchanged = outcome.FileDiffCounts.Unchanged
+	}
+
+	stageID, err := rec.RecordStage(bgCtx, sr)
+	if err != nil {
+		slog.Warn("store.record_stage.error", "node", node.ID, "error", err)
+		return
+	}
+
+	// Derive events from the outcome.
+	var events []store.StageEvent
+
+	if outcome.ExhaustionReason == ExhaustionReadLoop {
+		events = append(events, store.StageEvent{
+			StageID:   stageID,
+			RunID:     runID,
+			EventType: "read_loop_terminated",
+			Detail:    outcome.FailureReason,
+		})
+	}
+	if outcome.BuildGatePassed != nil {
+		if *outcome.BuildGatePassed {
+			events = append(events, store.StageEvent{
+				StageID:   stageID,
+				RunID:     runID,
+				EventType: "build_gate_pass",
+				Detail:    fmt.Sprintf("passed on attempt %d", outcome.BuildGateAttempts),
+			})
+		} else {
+			events = append(events, store.StageEvent{
+				StageID:   stageID,
+				RunID:     runID,
+				EventType: "build_gate_fail",
+				Detail:    outcome.FailureReason,
+			})
+		}
+	}
+	if outcome.FileDiffCounts != nil && outcome.FileDiffCounts.Added == 0 &&
+		outcome.FileDiffCounts.Modified == 0 && outcome.FileDiffCounts.Removed == 0 {
+		events = append(events, store.StageEvent{
+			StageID:   stageID,
+			RunID:     runID,
+			EventType: "empty_output",
+			Detail:    "no filesystem changes detected",
+		})
+	}
+
+	for _, evt := range events {
+		if err := rec.RecordEvent(bgCtx, evt); err != nil {
+			slog.Warn("store.record_event.error", "node", node.ID, "event", evt.EventType, "error", err)
+		}
 	}
 }

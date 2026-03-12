@@ -26,6 +26,7 @@ graph TB
 
     subgraph infra [Infrastructure]
         loggingPkg["internal/logging"]
+        storePkg["internal/store"]
     end
 
     subgraph entrypoints [Entry Points]
@@ -45,6 +46,8 @@ graph TB
     dotPkg --> runPipeline
     loggingPkg --> runPipeline
     toolsPkg --> runPipeline
+    storePkg --> runPipeline
+    storePkg --> pipelinePkg
 
     llmPkg --> testLLM
     llmPkg --> testAgent
@@ -76,7 +79,7 @@ graph LR
     dot --> pipeline
 ```
 
-Key property: `internal/dot` depends on nothing internal. `internal/pipeline` depends on `internal/dot` (for graph types) and `internal/agent` (for the codergen backend adapter). `internal/agent` depends on `internal/llm` and `internal/tools`. `internal/logging` depends on nothing internal and is used only by the runner entry point. This forms a clean DAG with no risk of circular imports.
+Key property: `internal/dot` depends on nothing internal. `internal/pipeline` depends on `internal/dot` (for graph types), `internal/agent` (for the codergen backend adapter), and `internal/store` (for the `RunRecorder` interface). `internal/agent` depends on `internal/llm` and `internal/tools`. `internal/logging` and `internal/store` depend on nothing internal and are used by the runner entry point. This forms a clean DAG with no risk of circular imports.
 
 ---
 
@@ -711,14 +714,14 @@ Each pipeline execution produces:
 | `dot/graph.go` | Graph, Node, Edge types, accessors (Model, MaxRounds, CheckCmd, CheckMaxRetries, etc.), ParseDuration |
 | `dot/lexer.go` | Tokenizer with comment stripping and position tracking |
 | `dot/parser.go` | Recursive descent parser for DOT subset, recursion depth limit |
-| `pipeline/outcome.go` | StageStatus enum, Outcome struct, and StageUsage type |
+| `pipeline/outcome.go` | StageStatus enum, Outcome struct (with observability fields), StageUsage, FileDiffCounts |
 | `pipeline/context.go` | Thread-safe key-value context |
 | `pipeline/condition.go` | Condition expression evaluator |
 | `pipeline/handler.go` | Handler interface, HandlerRegistry, shape mapping |
 | `pipeline/handlers.go` | Start, Exit, Conditional, Codergen handlers (with build gate and scratch lifecycle), CheckRunner, BackendResult, backends |
 | `pipeline/scratch.go` | Scratch directory lifecycle: SetupScratch, ArchiveAndCleanScratch, copyDir |
 | `pipeline/snapshot.go` | Filesystem observation: SnapshotDir, DiffSnapshots, FileDiff |
-| `pipeline/engine.go` | Core loop, edge selection, goal gates, retry, backoff, usage aggregation, failure halting |
+| `pipeline/engine.go` | Core loop, edge selection, goal gates, retry, backoff, usage aggregation, failure halting, stage recording |
 | `pipeline/checkpoint.go` | JSON checkpoint save/load/resume |
 | `pipeline/validate.go` | 16 lint rules, Diagnostic model, ValidateOrError |
 | `pipeline/backend.go` | AgentBackend: adapts Layer 2 agent loop to CodergenBackend, per-node model override, model override flag |
@@ -752,6 +755,92 @@ flowchart TD
 
     NodeLoop --> Artifacts["Logs directory:\n  pipeline.log\n  checkpoint.json\n  summary.json\n  {node}/prompt.md\n  {node}/response.md\n  {node}/status.json\n  {node}/usage.json\n  {node}/conversation.json\n  {node}/buildgate_attempt_N.txt"]
 ```
+
+---
+
+## Observability Database (`internal/store`)
+
+### Purpose
+
+Persists pipeline run metadata, stage results, and notable events to a PostgreSQL database for cross-run analysis, pattern detection, and data-driven iteration on the engine. The database is entirely optional — when `ATTRACTOR_DB_URL` is not set, a `NopRecorder` silently discards all writes and the engine behaves identically to before.
+
+### Architecture
+
+```mermaid
+flowchart LR
+    subgraph mainGo [cmd/run-pipeline]
+        startRun[StartRun]
+        finishRun[FinishRun]
+    end
+    subgraph engineGo [pipeline/engine.go]
+        recordStage[RecordStage]
+        recordEvent[RecordEvent]
+    end
+    subgraph storePkg [internal/store]
+        recorder[RunRecorder Interface]
+        nop[NopRecorder]
+        pg[PostgresStore]
+    end
+    subgraph docker [Docker]
+        pgdb[(attractor-db)]
+    end
+
+    startRun --> recorder
+    recordStage --> recorder
+    recordEvent --> recorder
+    finishRun --> recorder
+    recorder --> pg --> pgdb
+    recorder -.-> nop
+```
+
+### Schema
+
+Three tables in `internal/store/schema.sql`, applied automatically via `CREATE TABLE IF NOT EXISTS`:
+
+- **`pipeline_runs`** — one row per pipeline execution. Captures timestamps, status, pipeline metadata, model configuration, token usage, and stage counts.
+- **`stage_results`** — one row per stage per run. Captures node ID, model, status, token usage, duration, filesystem diff counts, scratch summary presence, and build gate results.
+- **`stage_events`** — notable moments within a stage: `nudge_injected`, `read_loop_terminated`, `build_gate_pass`, `build_gate_fail`, `empty_output`. Each event has a type, optional round number, and detail text.
+
+### Interface
+
+```go
+type RunRecorder interface {
+    StartRun(ctx, PipelineRun) (uuid.UUID, error)
+    FinishRun(ctx, id, RunFinish) error
+    RecordStage(ctx, StageResult) (int64, error)
+    RecordEvent(ctx, StageEvent) error
+    Close() error
+}
+```
+
+`NopRecorder` satisfies this interface with no-ops. `PostgresStore` uses `pgx/v5` connection pooling.
+
+### Integration
+
+- **`cmd/run-pipeline`** calls `StartRun` before `pipeline.Run()` and `FinishRun` after, passing the `RunRecorder` and run UUID into `RunConfig`.
+- **`pipeline/engine.go`** calls `RecordStage` after each node completes and derives events from the `Outcome` (exhaustion reason, build gate results, empty filesystem output).
+- **`pipeline/handlers.go`** surfaces structured fields on `Outcome` (`BuildGateAttempts`, `BuildGatePassed`, `FileDiffCounts`, `ExhaustionReason`, `PromptLength`, `ResponseLength`, `ScratchSummaryProduced`) so the engine can record them without parsing failure reason strings.
+
+### Infrastructure
+
+Local Postgres via Docker with a named volume for persistence:
+
+```bash
+docker run -d --name attractor-db -p 5432:5432 \
+  -e POSTGRES_USER=attractor -e POSTGRES_PASSWORD=attractor -e POSTGRES_DB=attractor \
+  -v attractor-pgdata:/var/lib/postgresql/data postgres:17
+```
+
+Connection string stored in `.env` (gitignored) as `ATTRACTOR_DB_URL`. No credentials are hardcoded in Go source or committed to version control.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `store/store.go` | `RunRecorder` interface, data structs, `NopRecorder` |
+| `store/postgres.go` | `PostgresStore` implementation with `pgx/v5`, schema migration |
+| `store/schema.sql` | DDL for all three tables (embedded via `//go:embed`) |
+| `store/store_test.go` | Unit tests (NopRecorder) and integration tests (skipped without `ATTRACTOR_DB_URL`) |
 
 ---
 

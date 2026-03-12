@@ -139,6 +139,20 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 		slog.Info("pipeline.snapshot.skipped", "node", node.ID, "reason", "no work dir (simulate mode)")
 	}
 
+	// fileDiffCounts converts a FileDiff pointer into a FileDiffCounts pointer
+	// for inclusion in the Outcome.
+	fileDiffCounts := func(fd *FileDiff) *FileDiffCounts {
+		if fd == nil {
+			return nil
+		}
+		return &FileDiffCounts{
+			Added:     len(fd.Added),
+			Modified:  len(fd.Modified),
+			Removed:   len(fd.Removed),
+			Unchanged: fd.Unchanged,
+		}
+	}
+
 	// captureFilesystemDiff takes the after-snapshot, computes the diff against
 	// beforeSnap, writes it to the stage log directory, and returns it. Called
 	// on both success and failure paths so post-mortem analysis always has
@@ -163,6 +177,9 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	var responseText string
 	var stageUsage *StageUsage
 	var lastConversation []llm.Message
+	var buildGateAttempts int
+	var buildGatePassed *bool
+
 	if h.Backend != nil {
 		result, err := h.Backend.Run(node, prompt, ctx)
 		if err != nil {
@@ -170,6 +187,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 			outcome := Outcome{
 				Status:        StatusFail,
 				FailureReason: err.Error(),
+				PromptLength:  len(prompt),
 			}
 			writeStatus(stageDir, outcome)
 			return outcome
@@ -194,7 +212,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 		}
 		if result.Exhausted {
 			_ = os.WriteFile(filepath.Join(stageDir, "response.md"), []byte(responseText), 0o644)
-			captureFilesystemDiff()
+			fsDiff := captureFilesystemDiff()
 			var reason string
 			if result.ExhaustionReason == ExhaustionReadLoop {
 				reason = fmt.Sprintf("agent terminated: persistent read-loop detected after %d rounds", result.Rounds)
@@ -203,9 +221,13 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 			}
 			slog.Warn("pipeline.stage.exhausted", "node", node.ID, "rounds", result.Rounds, "reason", result.ExhaustionReason)
 			outcome := Outcome{
-				Status:        StatusFail,
-				FailureReason: reason,
-				Usage:         stageUsage,
+				Status:           StatusFail,
+				FailureReason:    reason,
+				Usage:            stageUsage,
+				ExhaustionReason: result.ExhaustionReason,
+				PromptLength:     len(prompt),
+				ResponseLength:   len(responseText),
+				FileDiffCounts:   fileDiffCounts(fsDiff),
 			}
 			writeStatus(stageDir, outcome)
 			return outcome
@@ -215,23 +237,33 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 		if checkCmd := node.CheckCmd(); checkCmd != "" && h.CheckRunner != nil {
 			maxAttempts := node.CheckMaxRetries()
 			for attempt := 1; attempt <= maxAttempts; attempt++ {
+				buildGateAttempts = attempt
 				slog.Info("pipeline.buildgate", "node", node.ID, "attempt", attempt, "cmd", checkCmd)
 				checkOutput, checkErr := h.CheckRunner(checkCmd)
 				if checkErr == nil {
 					slog.Info("pipeline.buildgate.pass", "node", node.ID, "attempt", attempt)
+					passed := true
+					buildGatePassed = &passed
 					break
 				}
 				slog.Warn("pipeline.buildgate.fail", "node", node.ID, "attempt", attempt, "output", truncate(checkOutput, 500))
 				_ = os.WriteFile(filepath.Join(stageDir, fmt.Sprintf("buildgate_attempt_%d.txt", attempt)), []byte(checkOutput), 0o644)
 
 				if attempt == maxAttempts {
-					captureFilesystemDiff()
+					fsDiff := captureFilesystemDiff()
+					failed := false
+					buildGatePassed = &failed
 					reason := fmt.Sprintf("build gate failed after %d attempts: %s", maxAttempts, truncate(checkOutput, 200))
 					slog.Error("pipeline.buildgate.exhausted", "node", node.ID, "attempts", maxAttempts)
 					outcome := Outcome{
-						Status:        StatusFail,
-						FailureReason: reason,
-						Usage:         stageUsage,
+						Status:            StatusFail,
+						FailureReason:     reason,
+						Usage:             stageUsage,
+						PromptLength:      len(prompt),
+						ResponseLength:    len(responseText),
+						BuildGateAttempts: buildGateAttempts,
+						BuildGatePassed:   buildGatePassed,
+						FileDiffCounts:    fileDiffCounts(fsDiff),
 					}
 					writeStatus(stageDir, outcome)
 					return outcome
@@ -242,10 +274,18 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 				fixResult, fixErr := h.Backend.Run(node, fixPrompt, ctx)
 				if fixErr != nil {
 					slog.Warn("pipeline.buildgate.fix.error", "node", node.ID, "error", fixErr)
+					fsDiff := captureFilesystemDiff()
+					failed := false
+					buildGatePassed = &failed
 					outcome := Outcome{
-						Status:        StatusFail,
-						FailureReason: fmt.Sprintf("build gate fix attempt failed: %v", fixErr),
-						Usage:         stageUsage,
+						Status:            StatusFail,
+						FailureReason:     fmt.Sprintf("build gate fix attempt failed: %v", fixErr),
+						Usage:             stageUsage,
+						PromptLength:      len(prompt),
+						ResponseLength:    len(responseText),
+						BuildGateAttempts: buildGateAttempts,
+						BuildGatePassed:   buildGatePassed,
+						FileDiffCounts:    fileDiffCounts(fsDiff),
 					}
 					writeStatus(stageDir, outcome)
 					return outcome
@@ -258,13 +298,21 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 				responseText = fixResult.Response
 
 				if fixResult.Exhausted {
-					captureFilesystemDiff()
+					fsDiff := captureFilesystemDiff()
+					failed := false
+					buildGatePassed = &failed
 					reason := fmt.Sprintf("agent exhausted during build gate fix (attempt %d)", attempt)
 					slog.Warn("pipeline.buildgate.fix.exhausted", "node", node.ID, "attempt", attempt)
 					outcome := Outcome{
-						Status:        StatusFail,
-						FailureReason: reason,
-						Usage:         stageUsage,
+						Status:            StatusFail,
+						FailureReason:     reason,
+						Usage:             stageUsage,
+						ExhaustionReason:  result.ExhaustionReason,
+						PromptLength:      len(prompt),
+						ResponseLength:    len(responseText),
+						BuildGateAttempts: buildGateAttempts,
+						BuildGatePassed:   buildGatePassed,
+						FileDiffCounts:    fileDiffCounts(fsDiff),
 					}
 					writeStatus(stageDir, outcome)
 					return outcome
@@ -283,12 +331,14 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 
 	// Scratch lifecycle: archive, read summary, clean up.
 	var scratchSummary string
+	scratchSummaryProduced := false
 	if h.WorkDir != "" && h.Backend != nil {
 		var err error
 		scratchSummary, err = ArchiveAndCleanScratch(h.WorkDir, logsRoot, node.ID)
 		if err != nil {
 			slog.Warn("pipeline.scratch.archive.error", "node", node.ID, "error", err)
 		}
+		scratchSummaryProduced = scratchSummary != ""
 	}
 
 	files := extractFileList(lastConversation)
@@ -328,11 +378,17 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 		Notes:  "stage completed: " + node.ID,
 		Usage:  stageUsage,
 		ContextUpdates: map[string]string{
-			"last_stage":                    node.ID,
-			"last_response":                 truncate(responseText, 200),
-			"completed_stages":              completedStages,
-			"stage_summary:" + node.ID:      stageSummary,
+			"last_stage":               node.ID,
+			"last_response":            truncate(responseText, 200),
+			"completed_stages":         completedStages,
+			"stage_summary:" + node.ID: stageSummary,
 		},
+		PromptLength:          len(prompt),
+		ResponseLength:        len(responseText),
+		ScratchSummaryProduced: scratchSummaryProduced,
+		BuildGateAttempts:     buildGateAttempts,
+		BuildGatePassed:       buildGatePassed,
+		FileDiffCounts:        fileDiffCounts(fsDiff),
 	}
 	writeStatus(stageDir, outcome)
 	return outcome

@@ -29,6 +29,7 @@ attractor/
 │   ├── agent/               # Layer 2: Agent loop, system prompt, conversation compression
 │   ├── dot/                 # Layer 3: DOT lexer, parser, and graph model
 │   ├── pipeline/            # Layer 3: Execution engine, handlers, context, checkpoint, validation
+│   ├── store/               # Observability: PostgreSQL persistence for run/stage/event data
 │   └── logging/             # Structured logging setup (slog multi-handler)
 ├── pipelines/               # DOT pipeline definitions
 ├── go.mod
@@ -40,6 +41,7 @@ attractor/
 - **Go 1.21+**
 - **Docker Desktop** (for the `shell` tool, which runs commands in an isolated container)
 - **OpenRouter API key** (set `OPENROUTER_API_KEY` in a `.env` file at the project root)
+- **PostgreSQL** (optional, for observability database — see below)
 
 ## Setup
 
@@ -49,6 +51,14 @@ cd attractor
 
 # Create a .env file with your OpenRouter API key
 echo "OPENROUTER_API_KEY=sk-or-..." > .env
+
+# (Optional) Start a local Postgres for observability data
+docker run -d --name attractor-db -p 5432:5432 \
+  -e POSTGRES_USER=attractor -e POSTGRES_PASSWORD=attractor -e POSTGRES_DB=attractor \
+  -v attractor-pgdata:/var/lib/postgresql/data postgres:17
+
+# Add the database URL to .env
+echo "ATTRACTOR_DB_URL=postgres://attractor:attractor@localhost:5432/attractor?sslmode=disable" >> .env
 ```
 
 ## Running Tests
@@ -150,6 +160,7 @@ The runner performs a pre-flight checklist (workdir, API key, Docker, model vali
 | Working Memory | `_scratch/` directory with engine lifecycle | Agents maintain working notes; engine seeds context, verifies summary, archives, and cleans between stages |
 | Behavioral Detection | Read-loop detection, nudge, escalation, empty-output | Detects 5+ consecutive read-only rounds, injects a course-correction nudge, and terminates the stage early if the pattern persists after nudging; warns when a stage produces no deliverable files |
 | Filesystem Observation | Directory snapshots + diff between stages | Ground-truth detection of what files an agent added, removed, or modified — independent of conversation reports; enhances empty-output detection and provides diffs for downstream context |
+| Observability Database | Local PostgreSQL via Docker | Optional persistence of run/stage/event data for cross-run analysis; `NopRecorder` when no DB configured |
 | Structured Logging | `log/slog` multi-handler | Always-on INFO to terminal, DEBUG to JSON file; no toggle flag |
 
 ## Spec Reference

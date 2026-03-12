@@ -26,7 +26,9 @@ import (
 	"github.com/campallison/attractor/internal/llm"
 	"github.com/campallison/attractor/internal/logging"
 	"github.com/campallison/attractor/internal/pipeline"
+	"github.com/campallison/attractor/internal/store"
 	"github.com/campallison/attractor/internal/tools"
+	"github.com/google/uuid"
 )
 
 const (
@@ -114,6 +116,21 @@ func main() {
 	}
 	defer logging.Teardown()
 
+	// Observability database: connect if ATTRACTOR_DB_URL is set.
+	var recorder store.RunRecorder = store.NopRecorder{}
+	if dbURL := os.Getenv("ATTRACTOR_DB_URL"); dbURL != "" {
+		pgStore, dbErr := store.NewPostgresStore(context.Background(), dbURL)
+		if dbErr != nil {
+			fmt.Printf("    [!!] Database unavailable: %v (continuing without persistence)\n", dbErr)
+		} else {
+			recorder = pgStore
+			defer pgStore.Close()
+			fmt.Println("    [ok] Observability database connected")
+		}
+	} else {
+		fmt.Println("    [--] Observability database (ATTRACTOR_DB_URL not set)")
+	}
+
 	fmt.Printf("    Logs: %s\n", logsRoot)
 	fmt.Printf("    Log file: %s\n", logFilePath)
 	fmt.Printf("    Work dir: %s\n", *workDir)
@@ -197,13 +214,58 @@ func main() {
 	fmt.Println()
 	startTime := time.Now()
 
+	effectiveModel := *model
+	if *modelOverride != "" {
+		effectiveModel = *modelOverride
+	}
+
+	runID, startErr := recorder.StartRun(context.Background(), store.PipelineRun{
+		PipelineFile: *pipelineFile,
+		GraphName:    g.Name,
+		Goal:         g.Goal(),
+		DefaultModel: *model,
+		ModelOverride: *modelOverride,
+		Simulate:     *simulate,
+		DockerImage:  *dockerImage,
+		BudgetTokens: *budgetTokens,
+		StagesTotal:  countTaskNodes(g),
+	})
+	if startErr != nil {
+		fmt.Printf("    [!!] Failed to record run start: %v (continuing without persistence)\n", startErr)
+		runID = uuid.Nil
+		recorder = store.NopRecorder{}
+	}
+
 	result, err := pipeline.Run(pipeline.RunConfig{
 		Graph:           g,
 		LogsRoot:        logsRoot,
 		Registry:        registry,
 		MaxBudgetTokens: *budgetTokens,
+		Recorder:        recorder,
+		RunID:           runID,
 	})
 	elapsed := time.Since(startTime)
+
+	// Record run completion regardless of error.
+	if runID != uuid.Nil {
+		finishStatus := string(result.Status)
+		if err != nil {
+			finishStatus = "error"
+		}
+		finishErr := recorder.FinishRun(context.Background(), runID, store.RunFinish{
+			FinishedAt:        time.Now(),
+			DurationMs:        int(elapsed.Milliseconds()),
+			Status:            finishStatus,
+			FailureReason:     result.FailureReason,
+			TotalInputTokens:  result.TotalUsage.InputTokens,
+			TotalOutputTokens: result.TotalUsage.OutputTokens,
+			TotalTokens:       result.TotalUsage.TotalTokens,
+			StagesCompleted:   len(result.CompletedNodes),
+		})
+		if finishErr != nil {
+			fmt.Printf("    [!!] Failed to record run finish: %v\n", finishErr)
+		}
+	}
 
 	if err != nil {
 		log.Fatalf("Pipeline execution error: %v", err)
@@ -247,10 +309,6 @@ func main() {
 
 	// 8. Write summary JSON
 	summaryPath := filepath.Join(logsRoot, "summary.json")
-	effectiveModel := *model
-	if *modelOverride != "" {
-		effectiveModel = *modelOverride
-	}
 	summaryData := map[string]any{
 		"status":          string(result.Status),
 		"completed_nodes": result.CompletedNodes,
@@ -461,6 +519,21 @@ func runPreflight(g *dot.Graph, workDir, model, modelOverride string, budgetToke
 		}
 	}
 	return preflightResult{warnings: warnings}
+}
+
+// countTaskNodes returns the number of codergen/task nodes (shape=box or
+// type=codergen), excluding structural nodes like start, exit, and conditionals.
+func countTaskNodes(g *dot.Graph) int {
+	count := 0
+	for _, n := range g.Nodes {
+		switch n.Shape() {
+		case "Mdiamond", "Msquare", "diamond":
+			continue
+		default:
+			count++
+		}
+	}
+	return count
 }
 
 func collectModelIDs(g *dot.Graph, defaultModel string) []string {
