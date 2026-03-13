@@ -166,7 +166,6 @@ func main() {
 	}
 
 	// Record run start early so the run ID can seed the sandbox name.
-	startTime := time.Now()
 	effectiveModel := *model
 	if *modelOverride != "" {
 		effectiveModel = *modelOverride
@@ -254,6 +253,7 @@ func main() {
 	// 5. Run pipeline
 	fmt.Println("[5] Running pipeline...")
 	fmt.Println()
+	startTime := time.Now()
 
 	result, err := pipeline.Run(ctx, pipeline.RunConfig{
 		Graph:           g,
@@ -573,15 +573,15 @@ func collectModelIDs(g *dot.Graph, defaultModel string) []string {
 }
 
 // sandboxName returns a Docker container name derived from the run UUID.
-// Format: "attractor-<first 8 hex chars>". If runID is uuid.Nil (no database),
-// a fresh UUID is generated so the name is always unique.
+// Format: "attractor-<first 8 hex chars>". If runID is uuid.Nil (e.g.
+// StartRun failed), a fresh UUID is generated so the name is always unique.
 func sandboxName(runID uuid.UUID) string {
 	id := runID
 	if id == uuid.Nil {
 		id = uuid.New()
 	}
-	hex := strings.ReplaceAll(id.String(), "-", "")
-	return "attractor-" + hex[:8]
+	hexID := strings.ReplaceAll(id.String(), "-", "")
+	return "attractor-" + hexID[:8]
 }
 
 func makeCheckRunner(containerName string) pipeline.CheckRunner {
