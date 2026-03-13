@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -16,7 +17,7 @@ import (
 func TestStartHandler(t *testing.T) {
 	h := StartHandler{}
 	node := &dot.Node{ID: "s", Attrs: map[string]string{"shape": "Mdiamond"}}
-	out := h.Execute(node, NewContext(), &dot.Graph{Attrs: map[string]string{}}, "")
+	out := h.Execute(context.Background(), node, NewContext(), &dot.Graph{Attrs: map[string]string{}}, "")
 	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
 		t.Errorf("status mismatch (-want +got):\n%s", diff)
 	}
@@ -25,7 +26,7 @@ func TestStartHandler(t *testing.T) {
 func TestExitHandler(t *testing.T) {
 	h := ExitHandler{}
 	node := &dot.Node{ID: "e", Attrs: map[string]string{"shape": "Msquare"}}
-	out := h.Execute(node, NewContext(), &dot.Graph{Attrs: map[string]string{}}, "")
+	out := h.Execute(context.Background(), node, NewContext(), &dot.Graph{Attrs: map[string]string{}}, "")
 	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
 		t.Errorf("status mismatch (-want +got):\n%s", diff)
 	}
@@ -34,7 +35,7 @@ func TestExitHandler(t *testing.T) {
 func TestConditionalHandler(t *testing.T) {
 	h := ConditionalHandler{}
 	node := &dot.Node{ID: "gate", Attrs: map[string]string{"shape": "diamond"}}
-	out := h.Execute(node, NewContext(), &dot.Graph{Attrs: map[string]string{}}, "")
+	out := h.Execute(context.Background(), node, NewContext(), &dot.Graph{Attrs: map[string]string{}}, "")
 	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
 		t.Errorf("status mismatch (-want +got):\n%s", diff)
 	}
@@ -53,7 +54,7 @@ func TestCodergenHandler_SimulatedMode(t *testing.T) {
 	g := &dot.Graph{Attrs: map[string]string{"goal": "build a widget"}}
 	ctx := NewContext()
 
-	out := h.Execute(node, ctx, g, logsRoot)
+	out := h.Execute(context.Background(), node, ctx, g, logsRoot)
 
 	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
 		t.Errorf("status mismatch (-want +got):\n%s", diff)
@@ -99,7 +100,7 @@ func TestCodergenHandler_WithBackend(t *testing.T) {
 	g := &dot.Graph{Attrs: map[string]string{}}
 	ctx := NewContext()
 
-	out := h.Execute(node, ctx, g, logsRoot)
+	out := h.Execute(context.Background(), node, ctx, g, logsRoot)
 
 	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
 		t.Errorf("status mismatch (-want +got):\n%s", diff)
@@ -116,7 +117,7 @@ func TestCodergenHandler_WithBackend(t *testing.T) {
 
 type failingBackend struct{ msg string }
 
-func (b failingBackend) Run(_ *dot.Node, _ string, _ *Context) (BackendResult, error) {
+func (b failingBackend) Run(_ context.Context, _ *dot.Node, _ string, _ *Context) (BackendResult, error) {
 	return BackendResult{}, fmt.Errorf("%s", b.msg)
 }
 
@@ -129,7 +130,7 @@ func TestCodergenHandler_BackendError(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 
 	if diff := cmp.Diff(StatusFail, out.Status); diff != "" {
 		t.Errorf("status mismatch (-want +got):\n%s", diff)
@@ -148,7 +149,7 @@ func TestCodergenHandler_FallbackToLabel(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	h.Execute(node, NewContext(), g, logsRoot)
+	h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 
 	promptData, err := os.ReadFile(filepath.Join(logsRoot, "review", "prompt.md"))
 	if err != nil {
@@ -243,7 +244,7 @@ type exhaustedBackend struct {
 	exhaustionReason string
 }
 
-func (b exhaustedBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {
+func (b exhaustedBackend) Run(_ context.Context, node *dot.Node, _ string, _ *Context) (BackendResult, error) {
 	reason := b.exhaustionReason
 	if reason == "" {
 		reason = ExhaustionRoundLimit
@@ -267,7 +268,7 @@ func TestCodergenHandler_ExhaustedBackend(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 
 	if diff := cmp.Diff(StatusFail, out.Status); diff != "" {
 		t.Errorf("status mismatch (-want +got):\n%s", diff)
@@ -320,7 +321,7 @@ func TestCodergenHandler_ReadLoopExhaustion(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 
 	if diff := cmp.Diff(StatusFail, out.Status); diff != "" {
 		t.Errorf("status mismatch (-want +got):\n%s", diff)
@@ -335,7 +336,7 @@ func TestCodergenHandler_ReadLoopExhaustion(t *testing.T) {
 
 type usageBackend struct{}
 
-func (b usageBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {
+func (b usageBackend) Run(_ context.Context, node *dot.Node, _ string, _ *Context) (BackendResult, error) {
 	return BackendResult{
 		Response: "generated code for " + node.ID,
 		Usage:    llm.Usage{InputTokens: 5000, OutputTokens: 1200, TotalTokens: 6200},
@@ -353,7 +354,7 @@ func TestCodergenHandler_WritesUsageJSON(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 
 	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
 		t.Fatalf("status mismatch (-want +got):\n%s", diff)
@@ -402,7 +403,7 @@ func TestCodergenHandler_SimulatedMode_NoUsageJSON(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 
 	if out.Usage != nil {
 		t.Error("expected nil Usage for simulated (nil backend) handler")
@@ -422,7 +423,7 @@ func TestCodergenHandler_PathTraversalNodeID(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	h.Execute(node, NewContext(), g, logsRoot)
+	h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 
 	// The sanitized directory should be inside logsRoot, not above it.
 	sanitized := sanitizeNodeID("../../etc")
@@ -448,8 +449,8 @@ func TestCodergenHandler_BuildGatePass(t *testing.T) {
 	logsRoot := t.TempDir()
 	h := CodergenHandler{
 		Backend: SimulatedBackend{},
-		CheckRunner: func(cmd string) (string, error) {
-			return "", nil // check passes
+		CheckRunner: func(_ context.Context, cmd string) (string, error) {
+			return "", nil
 		},
 	}
 	node := &dot.Node{ID: "build_ok", Attrs: map[string]string{
@@ -459,7 +460,7 @@ func TestCodergenHandler_BuildGatePass(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 
 	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
 		t.Errorf("status mismatch (-want +got):\n%s", diff)
@@ -472,7 +473,7 @@ type buildGateBackend struct {
 	prompts []string
 }
 
-func (b *buildGateBackend) Run(node *dot.Node, prompt string, _ *Context) (BackendResult, error) {
+func (b *buildGateBackend) Run(_ context.Context, node *dot.Node, prompt string, _ *Context) (BackendResult, error) {
 	b.calls++
 	b.prompts = append(b.prompts, prompt)
 	return BackendResult{
@@ -489,12 +490,12 @@ func TestCodergenHandler_BuildGateFailThenFix(t *testing.T) {
 	backend := &buildGateBackend{}
 	h := CodergenHandler{
 		Backend: backend,
-		CheckRunner: func(cmd string) (string, error) {
+		CheckRunner: func(_ context.Context, cmd string) (string, error) {
 			checkAttempts++
 			if checkAttempts == 1 {
 				return "internal/db/queries.go:15: undefined: models.Team", fmt.Errorf("exit status 1")
 			}
-			return "", nil // passes on second check
+			return "", nil
 		},
 	}
 	node := &dot.Node{ID: "fixable", Attrs: map[string]string{
@@ -504,7 +505,7 @@ func TestCodergenHandler_BuildGateFailThenFix(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 
 	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
 		t.Errorf("status mismatch (-want +got):\n%s", diff)
@@ -551,7 +552,7 @@ func TestCodergenHandler_BuildGateExhausted(t *testing.T) {
 	backend := &buildGateBackend{}
 	h := CodergenHandler{
 		Backend: backend,
-		CheckRunner: func(cmd string) (string, error) {
+		CheckRunner: func(_ context.Context, cmd string) (string, error) {
 			return "always fails: undefined: foo", fmt.Errorf("exit status 1")
 		},
 	}
@@ -563,7 +564,7 @@ func TestCodergenHandler_BuildGateExhausted(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 
 	if diff := cmp.Diff(StatusFail, out.Status); diff != "" {
 		t.Errorf("status mismatch (-want +got):\n%s", diff)
@@ -583,7 +584,7 @@ func TestCodergenHandler_NoCheckCmd(t *testing.T) {
 	checkCalled := false
 	h := CodergenHandler{
 		Backend: SimulatedBackend{},
-		CheckRunner: func(cmd string) (string, error) {
+		CheckRunner: func(_ context.Context, cmd string) (string, error) {
 			checkCalled = true
 			return "", nil
 		},
@@ -594,7 +595,7 @@ func TestCodergenHandler_NoCheckCmd(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 
 	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
 		t.Errorf("status mismatch (-want +got):\n%s", diff)
@@ -1130,7 +1131,7 @@ func TestExpandVariables_PriorContext(t *testing.T) {
 // and no file writes — used to test empty stage detection.
 type readOnlyConversationBackend struct{}
 
-func (b readOnlyConversationBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {
+func (b readOnlyConversationBackend) Run(_ context.Context, node *dot.Node, _ string, _ *Context) (BackendResult, error) {
 	msgs := []llm.Message{
 		{
 			Role: llm.RoleAssistant,
@@ -1163,7 +1164,7 @@ func TestCodergenHandler_EmptyOutputWarning(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 
 	// Stage should still succeed — empty output is a warning, not a failure.
 	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
@@ -1181,7 +1182,7 @@ func TestCodergenHandler_EmptyOutputSuppressed(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 
 	// Should succeed without warning (allow_empty_output suppresses it).
 	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
@@ -1198,7 +1199,7 @@ func TestCodergenHandler_NonEmptyOutputNoWarning(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 
 	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
 		t.Errorf("status mismatch (-want +got):\n%s", diff)
@@ -1211,7 +1212,7 @@ type conversationBackend struct {
 	files []string
 }
 
-func (b conversationBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {
+func (b conversationBackend) Run(_ context.Context, node *dot.Node, _ string, _ *Context) (BackendResult, error) {
 	var msgs []llm.Message
 	for i, path := range b.files {
 		callID := fmt.Sprintf("call_%d", i)
@@ -1245,7 +1246,7 @@ type fileWritingBackend struct {
 	files   map[string]string // relative path -> content
 }
 
-func (b fileWritingBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {
+func (b fileWritingBackend) Run(_ context.Context, node *dot.Node, _ string, _ *Context) (BackendResult, error) {
 	var msgs []llm.Message
 	i := 0
 	for relPath, content := range b.files {
@@ -1300,7 +1301,7 @@ func TestCodergenHandler_FilesystemDiffWritten(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
 		t.Fatalf("status mismatch (-want +got):\n%s", diff)
 	}
@@ -1335,7 +1336,7 @@ func TestCodergenHandler_FilesystemDiffEmpty(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
 		t.Fatalf("status mismatch (-want +got):\n%s", diff)
 	}
@@ -1361,7 +1362,7 @@ func TestCodergenHandler_SimulateMode_NoSnapshot(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
 		t.Fatalf("status mismatch (-want +got):\n%s", diff)
 	}
@@ -1386,7 +1387,7 @@ func TestCodergenHandler_ExhaustedWithDiff(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 	if diff := cmp.Diff(StatusFail, out.Status); diff != "" {
 		t.Fatalf("status mismatch (-want +got):\n%s", diff)
 	}
@@ -1417,7 +1418,7 @@ func TestCodergenHandler_EmptyConversationButFSChanged(t *testing.T) {
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
-	out := h.Execute(node, NewContext(), g, logsRoot)
+	out := h.Execute(context.Background(), node, NewContext(), g, logsRoot)
 	if diff := cmp.Diff(StatusSuccess, out.Status); diff != "" {
 		t.Fatalf("status mismatch (-want +got):\n%s", diff)
 	}
@@ -1442,7 +1443,7 @@ type diskOnlyBackend struct {
 	workDir string
 }
 
-func (b *diskOnlyBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {
+func (b *diskOnlyBackend) Run(_ context.Context, node *dot.Node, _ string, _ *Context) (BackendResult, error) {
 	// Write a file directly to disk (via shell tool or similar).
 	if err := os.WriteFile(filepath.Join(b.workDir, "secret.go"), []byte("package secret"), 0o644); err != nil {
 		return BackendResult{}, err
@@ -1471,7 +1472,7 @@ func TestCodergenHandler_ContextCarryover(t *testing.T) {
 		"prompt": "Design the contracts.",
 	}}
 
-	out1 := h1.Execute(node1, ctx, g, logsRoot)
+	out1 := h1.Execute(context.Background(), node1, ctx, g, logsRoot)
 	if diff := cmp.Diff(StatusSuccess, out1.Status); diff != "" {
 		t.Fatalf("stage 1 status (-want +got):\n%s", diff)
 	}
@@ -1501,7 +1502,7 @@ func TestCodergenHandler_ContextCarryover(t *testing.T) {
 		"prompt": "Scaffold the project.",
 	}}
 
-	out2 := h2.Execute(node2, ctx, g, logsRoot)
+	out2 := h2.Execute(context.Background(), node2, ctx, g, logsRoot)
 	if diff := cmp.Diff(StatusSuccess, out2.Status); diff != "" {
 		t.Fatalf("stage 2 status (-want +got):\n%s", diff)
 	}

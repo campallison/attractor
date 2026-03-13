@@ -3,15 +3,16 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/campallison/attractor/internal/llm"
 )
 
 // ToolExecutor is the function signature for a tool's execute handler.
-// It receives the raw JSON arguments and a working directory, and returns
-// the tool's text output or an error.
-type ToolExecutor func(args json.RawMessage, workDir string) (string, error)
+// It receives a context for cancellation, the raw JSON arguments, and a
+// working directory, and returns the tool's text output or an error.
+type ToolExecutor func(ctx context.Context, args json.RawMessage, workDir string) (string, error)
 
 // RegisteredTool pairs an LLM tool definition with its execute handler.
 type RegisteredTool struct {

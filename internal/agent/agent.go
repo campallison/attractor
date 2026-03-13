@@ -93,7 +93,7 @@ func RunTask(ctx context.Context, client Completer, model, prompt, workDir strin
 		conversation = append(conversation, resp.Message)
 
 		for _, tc := range toolCalls {
-			result := executeTool(registry, tc, workDir)
+			result := executeTool(ctx, registry, tc, workDir)
 			slog.Info("agent.tool", "tool", tc.Name, "result_bytes", len(result.Content), "is_error", result.IsError)
 			fmt.Printf("[tool] %s -> %s\n", tc.Name, summarize(result.Content, 120))
 			conversation = append(conversation, llm.ToolResultMessage(
@@ -112,7 +112,7 @@ func RunTask(ctx context.Context, client Completer, model, prompt, workDir strin
 // executeTool looks up a tool call in the registry and executes it. Unknown
 // tools or execution errors are returned as error results so the model can
 // adjust its approach.
-func executeTool(registry *tools.Registry, tc llm.ToolCall, workDir string) llm.ToolResultData {
+func executeTool(ctx context.Context, registry *tools.Registry, tc llm.ToolCall, workDir string) llm.ToolResultData {
 	registered, ok := registry.Get(tc.Name)
 	if !ok {
 		return llm.ToolResultData{
@@ -122,7 +122,7 @@ func executeTool(registry *tools.Registry, tc llm.ToolCall, workDir string) llm.
 		}
 	}
 
-	output, err := registered.Execute(json.RawMessage(tc.Arguments), workDir)
+	output, err := registered.Execute(ctx, json.RawMessage(tc.Arguments), workDir)
 	if err != nil {
 		return llm.ToolResultData{
 			ToolCallID: tc.ID,
@@ -195,7 +195,7 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 		conversation = append(conversation, resp.Message)
 
 		for _, tc := range toolCalls {
-			result := executeTool(registry, tc, workDir)
+			result := executeTool(ctx, registry, tc, workDir)
 			slog.Info("agent.tool", "tool", tc.Name, "result_bytes", len(result.Content), "is_error", result.IsError)
 			conversation = append(conversation, llm.ToolResultMessage(
 				result.ToolCallID,

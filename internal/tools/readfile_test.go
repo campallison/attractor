@@ -1,13 +1,13 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
 )
 
 func TestExecuteReadFile(t *testing.T) {
@@ -68,7 +68,7 @@ func TestExecuteReadFile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rawArgs, _ := json.Marshal(tt.args)
-			got, err := executeReadFile(rawArgs, dir)
+			got, err := executeReadFile(context.Background(), rawArgs, dir)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
@@ -175,7 +175,7 @@ func TestExecuteReadFile_PathTraversal(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rawArgs, _ := json.Marshal(readFileArgs{FilePath: tt.path})
-			_, err := executeReadFile(rawArgs, dir)
+			_, err := executeReadFile(context.Background(), rawArgs, dir)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -292,7 +292,7 @@ func TestExecuteReadFileOffsetLimit(t *testing.T) {
 	writeTestFile(t, dir, "ten.txt", strings.Join(lines, "\n")+"\n")
 
 	rawArgs, _ := json.Marshal(readFileArgs{FilePath: "ten.txt", Offset: 3, Limit: 2})
-	got, err := executeReadFile(rawArgs, dir)
+	got, err := executeReadFile(context.Background(), rawArgs, dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestExecuteReadFile_SensitiveFileDenied(t *testing.T) {
 	writeTestFile(t, dir, ".env", "SECRET_KEY=hunter2\n")
 
 	rawArgs, _ := json.Marshal(readFileArgs{FilePath: ".env"})
-	_, err := executeReadFile(rawArgs, dir)
+	_, err := executeReadFile(context.Background(), rawArgs, dir)
 	if err == nil {
 		t.Fatal("expected error reading .env, got nil")
 	}
@@ -331,7 +331,7 @@ func TestExecuteWriteFile_SensitiveFileDenied(t *testing.T) {
 	dir := t.TempDir()
 
 	rawArgs, _ := json.Marshal(writeFileArgs{FilePath: ".env", Content: "SECRET=bad\n"})
-	_, err := executeWriteFile(rawArgs, dir)
+	_, err := executeWriteFile(context.Background(), rawArgs, dir)
 	if err == nil {
 		t.Fatal("expected error writing .env, got nil")
 	}
@@ -353,7 +353,7 @@ func TestExecuteReadFile_FileTooLarge(t *testing.T) {
 	writeTestFile(t, dir, "big.txt", bigContent)
 
 	rawArgs, _ := json.Marshal(readFileArgs{FilePath: "big.txt"})
-	_, err := executeReadFile(rawArgs, dir)
+	_, err := executeReadFile(context.Background(), rawArgs, dir)
 	if err == nil {
 		t.Fatal("expected error for oversized file, got nil")
 	}

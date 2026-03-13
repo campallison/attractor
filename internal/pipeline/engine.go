@@ -41,16 +41,18 @@ type RunResult struct {
 }
 
 // Run executes a parsed and validated pipeline graph from start to exit. It
-// implements the core traversal loop from spec Section 3.2.
-func Run(cfg RunConfig) (RunResult, error) {
+// implements the core traversal loop from spec Section 3.2. The provided
+// context controls the run's lifecycle: cancellation stops the pipeline in
+// bounded time.
+func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	g := cfg.Graph
 	logsRoot := cfg.LogsRoot
 	registry := cfg.Registry
 
 	_ = os.MkdirAll(logsRoot, 0o755)
 
-	ctx := NewContext()
-	mirrorGraphAttributes(g, ctx)
+	pctx := NewContext()
+	mirrorGraphAttributes(g, pctx)
 
 	var completedNodes []string
 	var warnings []string
@@ -83,6 +85,19 @@ func Run(cfg RunConfig) (RunResult, error) {
 	budgetWarned75 := false
 
 	for {
+		if err := ctx.Err(); err != nil {
+			slog.Warn("pipeline.canceled", "reason", err, "completed_nodes", len(completedNodes))
+			return RunResult{
+				Status:         StatusFail,
+				CompletedNodes: completedNodes,
+				NodeOutcomes:   nodeOutcomes,
+				FailureReason:  fmt.Sprintf("pipeline canceled: %v", err),
+				Warnings:       warnings,
+				TotalUsage:     totalUsage,
+				StageUsages:    stageUsages,
+			}, nil
+		}
+
 		iterations++
 		if iterations > maxIter {
 			slog.Error("pipeline.max_iterations", "iterations", maxIter)
@@ -138,9 +153,9 @@ func Run(cfg RunConfig) (RunResult, error) {
 		slog.Info("pipeline.node.start", "node", current.ID, "model", nodeModel)
 		nodeStart := time.Now()
 
-		ctx.Set("current_node", current.ID)
+		pctx.Set("current_node", current.ID)
 		handler := registry.Resolve(current)
-		outcome := executeWithRetry(handler, current, ctx, g, logsRoot, nodeRetries)
+		outcome := executeWithRetry(ctx, handler, current, pctx, g, logsRoot, nodeRetries)
 
 		nodeDuration := time.Since(nodeStart)
 
@@ -173,7 +188,7 @@ func Run(cfg RunConfig) (RunResult, error) {
 		}
 
 		// Record stage to observability database.
-		recordStageResult(recorder, cfg.RunID, current, outcome, stageSequence, nodeDuration)
+		recordStageResult(ctx, recorder, cfg.RunID, current, outcome, stageSequence, nodeDuration)
 
 		// Budget threshold warnings.
 		if cfg.MaxBudgetTokens > 0 {
@@ -201,15 +216,15 @@ func Run(cfg RunConfig) (RunResult, error) {
 		}
 
 		// Step 4: Apply context updates.
-		ctx.ApplyUpdates(outcome.ContextUpdates)
-		ctx.Set("outcome", string(outcome.Status))
+		pctx.ApplyUpdates(outcome.ContextUpdates)
+		pctx.Set("outcome", string(outcome.Status))
 		if outcome.PreferredLabel != "" {
-			ctx.Set("preferred_label", outcome.PreferredLabel)
+			pctx.Set("preferred_label", outcome.PreferredLabel)
 		}
-		ctx.AppendLog(fmt.Sprintf("node %s: %s", current.ID, outcome.Status))
+		pctx.AppendLog(fmt.Sprintf("node %s: %s", current.ID, outcome.Status))
 
 		// Step 5: Save checkpoint.
-		cp := NewCheckpoint(current.ID, completedNodes, nodeRetries, ctx)
+		cp := NewCheckpoint(current.ID, completedNodes, nodeRetries, pctx)
 		cpPath := filepath.Join(logsRoot, "checkpoint.json")
 		if err := cp.Save(cpPath); err != nil {
 			slog.Warn("pipeline.checkpoint.fail", "error", err)
@@ -219,7 +234,7 @@ func Run(cfg RunConfig) (RunResult, error) {
 		}
 
 		// Step 6: Select next edge.
-		nextEdge := SelectEdge(current.ID, outcome, ctx, g)
+		nextEdge := SelectEdge(current.ID, outcome, pctx, g)
 		if nextEdge == nil {
 			if outcome.Status == StatusFail {
 				slog.Error("pipeline.node.fail.terminal", "node", current.ID)
@@ -405,7 +420,7 @@ func isTerminal(node *dot.Node) bool {
 
 const maxRetriesCap = 100
 
-func executeWithRetry(h Handler, node *dot.Node, ctx *Context, g *dot.Graph, logsRoot string, nodeRetries map[string]int) Outcome {
+func executeWithRetry(ctx context.Context, h Handler, node *dot.Node, pctx *Context, g *dot.Graph, logsRoot string, nodeRetries map[string]int) Outcome {
 	maxRetries := node.MaxRetries()
 	graphDefault := 0
 	if v, ok := g.Attrs["default_max_retry"]; ok {
@@ -419,10 +434,16 @@ func executeWithRetry(h Handler, node *dot.Node, ctx *Context, g *dot.Graph, log
 	maxAttempts := maxRetries + 1
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return Outcome{
+				Status:        StatusFail,
+				FailureReason: fmt.Sprintf("canceled before attempt %d: %v", attempt, err),
+			}
+		}
 		if attempt > 1 {
 			slog.Warn("pipeline.retry", "node", node.ID, "attempt", attempt, "max_attempts", maxAttempts)
 		}
-		outcome := h.Execute(node, ctx, g, logsRoot)
+		outcome := h.Execute(ctx, node, pctx, g, logsRoot)
 
 		if outcome.Status.IsSuccess() {
 			nodeRetries[node.ID] = 0
@@ -433,7 +454,14 @@ func executeWithRetry(h Handler, node *dot.Node, ctx *Context, g *dot.Graph, log
 			nodeRetries[node.ID] = attempt
 			delay := backoffDelay(attempt)
 			slog.Warn("pipeline.retry.backoff", "node", node.ID, "attempt", attempt, "delay", delay.String())
-			time.Sleep(delay)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return Outcome{
+					Status:        StatusFail,
+					FailureReason: fmt.Sprintf("canceled during retry backoff: %v", ctx.Err()),
+				}
+			}
 			continue
 		}
 
@@ -442,7 +470,14 @@ func executeWithRetry(h Handler, node *dot.Node, ctx *Context, g *dot.Graph, log
 				nodeRetries[node.ID] = attempt
 				delay := backoffDelay(attempt)
 				slog.Warn("pipeline.retry.backoff", "node", node.ID, "attempt", attempt, "delay", delay.String(), "reason", outcome.FailureReason)
-				time.Sleep(delay)
+				select {
+				case <-time.After(delay):
+				case <-ctx.Done():
+					return Outcome{
+						Status:        StatusFail,
+						FailureReason: fmt.Sprintf("canceled during retry backoff: %v", ctx.Err()),
+					}
+				}
 				continue
 			}
 			if node.AllowPartial() {
@@ -503,8 +538,8 @@ func mirrorGraphAttributes(g *dot.Graph, ctx *Context) {
 
 // recordStageResult persists a stage outcome and any derived events to the
 // observability database. Errors are logged but do not halt the pipeline.
-func recordStageResult(rec store.RunRecorder, runID uuid.UUID, node *dot.Node, outcome Outcome, seq int, dur time.Duration) {
-	bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func recordStageResult(ctx context.Context, rec store.RunRecorder, runID uuid.UUID, node *dot.Node, outcome Outcome, seq int, dur time.Duration) {
+	dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	sr := store.StageResult{
@@ -535,7 +570,7 @@ func recordStageResult(rec store.RunRecorder, runID uuid.UUID, node *dot.Node, o
 		sr.FilesUnchanged = outcome.FileDiffCounts.Unchanged
 	}
 
-	stageID, err := rec.RecordStage(bgCtx, sr)
+	stageID, err := rec.RecordStage(dbCtx, sr)
 	if err != nil {
 		slog.Warn("store.record_stage.error", "node", node.ID, "error", err)
 		return
@@ -580,7 +615,7 @@ func recordStageResult(rec store.RunRecorder, runID uuid.UUID, node *dot.Node, o
 	}
 
 	for _, evt := range events {
-		if err := rec.RecordEvent(bgCtx, evt); err != nil {
+		if err := rec.RecordEvent(dbCtx, evt); err != nil {
 			slog.Warn("store.record_event.error", "node", node.ID, "event", evt.EventType, "error", err)
 		}
 	}

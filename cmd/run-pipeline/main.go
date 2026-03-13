@@ -18,8 +18,10 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/campallison/attractor/internal/dot"
@@ -62,6 +64,18 @@ func main() {
 	}
 
 	loadEnv()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		<-ctx.Done()
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		<-sig
+		fmt.Fprintln(os.Stderr, "\nForced shutdown.")
+		os.Exit(1)
+	}()
 
 	fmt.Println("=== Attractor Pipeline Runner ===")
 	fmt.Println()
@@ -236,7 +250,7 @@ func main() {
 		recorder = store.NopRecorder{}
 	}
 
-	result, err := pipeline.Run(pipeline.RunConfig{
+	result, err := pipeline.Run(ctx, pipeline.RunConfig{
 		Graph:           g,
 		LogsRoot:        logsRoot,
 		Registry:        registry,
@@ -252,7 +266,9 @@ func main() {
 		if err != nil {
 			finishStatus = "error"
 		}
-		finishErr := recorder.FinishRun(context.Background(), runID, store.RunFinish{
+		finishCtx, finishCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer finishCancel()
+		finishErr := recorder.FinishRun(finishCtx, runID, store.RunFinish{
 			FinishedAt:        time.Now(),
 			DurationMs:        int(elapsed.Milliseconds()),
 			Status:            finishStatus,
@@ -552,10 +568,10 @@ func collectModelIDs(g *dot.Graph, defaultModel string) []string {
 }
 
 func makeCheckRunner() pipeline.CheckRunner {
-	return func(cmd string) (string, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	return func(ctx context.Context, cmd string) (string, error) {
+		checkCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 		defer cancel()
-		dockerCmd := exec.CommandContext(ctx, "docker", "exec", "attractor-sandbox", "sh", "-c", cmd)
+		dockerCmd := exec.CommandContext(checkCtx, "docker", "exec", "attractor-sandbox", "sh", "-c", cmd)
 		out, err := dockerCmd.CombinedOutput()
 		return string(out), err
 	}

@@ -69,7 +69,7 @@ func TestAgentBackend_ModelOverride(t *testing.T) {
 			}
 			node := &dot.Node{ID: "test_node", Attrs: tt.nodeAttrs}
 
-			result, err := backend.Run(node, "test prompt", nil)
+			result, err := backend.Run(context.Background(), node, "test prompt", nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -94,7 +94,7 @@ func TestAgentBackend_ReturnsUsage(t *testing.T) {
 	}
 	node := &dot.Node{ID: "usage_node", Attrs: map[string]string{}}
 
-	result, err := backend.Run(node, "test prompt", nil)
+	result, err := backend.Run(context.Background(), node, "test prompt", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestAgentBackend_MaxRoundsThreaded(t *testing.T) {
 		"max_rounds": "3",
 	}}
 
-	result, err := backend.Run(node, "do work", nil)
+	result, err := backend.Run(context.Background(), node, "do work", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -81,7 +82,7 @@ func TestExecuteEditFile(t *testing.T) {
 			}
 
 			rawArgs, _ := json.Marshal(tt.args)
-			got, err := executeEditFile(rawArgs, dir)
+			got, err := executeEditFile(context.Background(), rawArgs, dir)
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -136,7 +137,7 @@ func TestExecuteEditFile_PathTraversal(t *testing.T) {
 				OldString: "a",
 				NewString: "b",
 			})
-			_, err := executeEditFile(rawArgs, dir)
+			_, err := executeEditFile(context.Background(), rawArgs, dir)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}

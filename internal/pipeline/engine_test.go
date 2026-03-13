@@ -1,10 +1,12 @@
 package pipeline
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/campallison/attractor/internal/dot"
 	"github.com/google/go-cmp/cmp"
@@ -227,7 +229,7 @@ func linearGraph() *dot.Graph {
 
 func TestRun_LinearPipeline(t *testing.T) {
 	logsRoot := t.TempDir()
-	result, err := Run(RunConfig{
+	result, err := Run(context.Background(), RunConfig{
 		Graph:    linearGraph(),
 		LogsRoot: logsRoot,
 		Registry: DefaultHandlerRegistry(CodergenHandler{}),
@@ -261,7 +263,7 @@ func TestRun_BranchingPipeline(t *testing.T) {
 	}
 
 	logsRoot := t.TempDir()
-	result, err := Run(RunConfig{
+	result, err := Run(context.Background(), RunConfig{
 		Graph:    g,
 		LogsRoot: logsRoot,
 		Registry: DefaultHandlerRegistry(CodergenHandler{}),
@@ -281,7 +283,7 @@ func TestRun_ContextFlows(t *testing.T) {
 	g := linearGraph()
 	logsRoot := t.TempDir()
 
-	result, err := Run(RunConfig{
+	result, err := Run(context.Background(), RunConfig{
 		Graph:    g,
 		LogsRoot: logsRoot,
 		Registry: DefaultHandlerRegistry(CodergenHandler{}),
@@ -320,7 +322,7 @@ func TestRun_GoalGateBlocks(t *testing.T) {
 	registry.Register("codergen", CodergenHandler{Backend: failingBackend{msg: "broken"}})
 
 	logsRoot := t.TempDir()
-	result, err := Run(RunConfig{
+	result, err := Run(context.Background(), RunConfig{
 		Graph:    g,
 		LogsRoot: logsRoot,
 		Registry: registry,
@@ -349,7 +351,7 @@ func TestRun_GoalGateSuccess(t *testing.T) {
 	}
 
 	logsRoot := t.TempDir()
-	result, err := Run(RunConfig{
+	result, err := Run(context.Background(), RunConfig{
 		Graph:    g,
 		LogsRoot: logsRoot,
 		Registry: DefaultHandlerRegistry(CodergenHandler{Backend: SimulatedBackend{}}),
@@ -364,7 +366,7 @@ func TestRun_GoalGateSuccess(t *testing.T) {
 
 func TestRun_CheckpointWritten(t *testing.T) {
 	logsRoot := t.TempDir()
-	_, err := Run(RunConfig{
+	_, err := Run(context.Background(), RunConfig{
 		Graph:    linearGraph(),
 		LogsRoot: logsRoot,
 		Registry: DefaultHandlerRegistry(CodergenHandler{}),
@@ -395,7 +397,7 @@ func TestRun_GraphAttributesMirrored(t *testing.T) {
 	}
 
 	logsRoot := t.TempDir()
-	_, err := Run(RunConfig{
+	_, err := Run(context.Background(), RunConfig{
 		Graph:    g,
 		LogsRoot: logsRoot,
 		Registry: DefaultHandlerRegistry(CodergenHandler{}),
@@ -418,7 +420,7 @@ func TestRun_NoStartNode(t *testing.T) {
 			{ID: "exit", Attrs: map[string]string{"shape": "Msquare"}},
 		},
 	}
-	_, err := Run(RunConfig{
+	_, err := Run(context.Background(), RunConfig{
 		Graph:    g,
 		LogsRoot: t.TempDir(),
 		Registry: DefaultHandlerRegistry(CodergenHandler{}),
@@ -450,7 +452,7 @@ func TestRun_FailWithNoOutgoingEdge(t *testing.T) {
 	registry.Register("exit", ExitHandler{})
 	registry.Register("codergen", CodergenHandler{Backend: failingBackend{msg: "boom"}})
 
-	result, err := Run(RunConfig{
+	result, err := Run(context.Background(), RunConfig{
 		Graph:    g,
 		LogsRoot: t.TempDir(),
 		Registry: registry,
@@ -486,7 +488,7 @@ func TestRun_FallbackEdgeSelection(t *testing.T) {
 	registry.Register("exit", ExitHandler{})
 	registry.Register("codergen", CodergenHandler{Backend: failingBackend{msg: "oops"}})
 
-	result, err := Run(RunConfig{
+	result, err := Run(context.Background(), RunConfig{
 		Graph:    g,
 		LogsRoot: t.TempDir(),
 		Registry: registry,
@@ -503,7 +505,7 @@ func TestRun_FallbackEdgeSelection(t *testing.T) {
 func TestRun_CheckpointWarning(t *testing.T) {
 	g := linearGraph()
 	// Use a path that cannot be written to trigger a checkpoint save error.
-	result, err := Run(RunConfig{
+	result, err := Run(context.Background(), RunConfig{
 		Graph:    g,
 		LogsRoot: "/dev/null/impossible",
 		Registry: DefaultHandlerRegistry(CodergenHandler{}),
@@ -543,7 +545,7 @@ func TestRun_AggregatesUsage(t *testing.T) {
 		},
 	}
 
-	result, err := Run(RunConfig{
+	result, err := Run(context.Background(), RunConfig{
 		Graph:    g,
 		LogsRoot: t.TempDir(),
 		Registry: DefaultHandlerRegistry(CodergenHandler{Backend: usageBackend{}}),
@@ -599,7 +601,7 @@ func TestRun_BudgetCapExceeded(t *testing.T) {
 
 	// usageBackend returns 6200 total tokens per stage.
 	// Cap at 7000: first stage (6200) passes, second stage (12400 cumulative) exceeds.
-	result, err := Run(RunConfig{
+	result, err := Run(context.Background(), RunConfig{
 		Graph:           g,
 		LogsRoot:        t.TempDir(),
 		Registry:        DefaultHandlerRegistry(CodergenHandler{Backend: usageBackend{}}),
@@ -642,7 +644,7 @@ func TestRun_BudgetCapNotExceeded(t *testing.T) {
 		},
 	}
 
-	result, err := Run(RunConfig{
+	result, err := Run(context.Background(), RunConfig{
 		Graph:           g,
 		LogsRoot:        t.TempDir(),
 		Registry:        DefaultHandlerRegistry(CodergenHandler{Backend: usageBackend{}}),
@@ -678,7 +680,7 @@ func TestRun_FailHaltsOnUnconditionalEdge(t *testing.T) {
 	registry.Register("exit", ExitHandler{})
 	registry.Register("codergen", CodergenHandler{Backend: failingBackend{msg: "stage crashed"}})
 
-	result, err := Run(RunConfig{
+	result, err := Run(context.Background(), RunConfig{
 		Graph:    g,
 		LogsRoot: t.TempDir(),
 		Registry: registry,
@@ -731,7 +733,7 @@ func TestRun_FailContinuesOnConditionalEdge(t *testing.T) {
 	registry.Register("exit", ExitHandler{})
 	registry.Register("codergen", CodergenHandler{Backend: riskyFail})
 
-	result, err := Run(RunConfig{
+	result, err := Run(context.Background(), RunConfig{
 		Graph:    g,
 		LogsRoot: t.TempDir(),
 		Registry: registry,
@@ -765,7 +767,7 @@ type nodeSelectiveBackend struct {
 	failNodes map[string]bool
 }
 
-func (b *nodeSelectiveBackend) Run(node *dot.Node, _ string, _ *Context) (BackendResult, error) {
+func (b *nodeSelectiveBackend) Run(ctx context.Context, node *dot.Node, _ string, _ *Context) (BackendResult, error) {
 	if b.failNodes[node.ID] {
 		return BackendResult{}, fmt.Errorf("simulated failure for %s", node.ID)
 	}
@@ -791,7 +793,7 @@ func TestRun_MaxIterationsExceeded(t *testing.T) {
 		},
 	}
 
-	result, err := Run(RunConfig{
+	result, err := Run(context.Background(), RunConfig{
 		Graph:         g,
 		LogsRoot:      t.TempDir(),
 		Registry:      DefaultHandlerRegistry(CodergenHandler{}),
@@ -806,4 +808,178 @@ func TestRun_MaxIterationsExceeded(t *testing.T) {
 	if !strings.Contains(result.FailureReason, "max iterations") {
 		t.Errorf("expected failure reason to mention max iterations, got %q", result.FailureReason)
 	}
+}
+
+// --- Context cancellation tests ---
+
+func TestRun_CancelBeforeFirstStage(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := Run(ctx, RunConfig{
+		Graph:    linearGraph(),
+		LogsRoot: t.TempDir(),
+		Registry: DefaultHandlerRegistry(CodergenHandler{}),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if diff := cmp.Diff(StatusFail, result.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+	if !strings.Contains(result.FailureReason, "canceled") {
+		t.Errorf("expected failure reason to mention cancellation, got %q", result.FailureReason)
+	}
+}
+
+// blockingBackend blocks until its context is canceled, allowing tests to
+// verify that handler execution respects cancellation.
+type blockingBackend struct {
+	started chan struct{}
+}
+
+func (b *blockingBackend) Run(ctx context.Context, _ *dot.Node, _ string, _ *Context) (BackendResult, error) {
+	if b.started != nil {
+		close(b.started)
+	}
+	<-ctx.Done()
+	return BackendResult{}, ctx.Err()
+}
+
+func TestRun_CancelDuringHandlerExecution(t *testing.T) {
+	backend := &blockingBackend{started: make(chan struct{})}
+	registry := DefaultHandlerRegistry(CodergenHandler{Backend: backend})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	var result RunResult
+	var runErr error
+	go func() {
+		defer close(done)
+		result, runErr = Run(ctx, RunConfig{
+			Graph:    linearGraph(),
+			LogsRoot: t.TempDir(),
+			Registry: registry,
+		})
+	}()
+
+	<-backend.started
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return within 5s after cancellation")
+	}
+
+	if runErr != nil {
+		t.Fatalf("unexpected error: %v", runErr)
+	}
+	if result.Status != StatusFail {
+		t.Errorf("expected fail status, got %s", result.Status)
+	}
+}
+
+func TestRun_CancelDuringRetryBackoff(t *testing.T) {
+	g := &dot.Graph{
+		Name:  "RetryCancel",
+		Attrs: map[string]string{"goal": "test retry cancel"},
+		Nodes: []*dot.Node{
+			{ID: "start", Attrs: map[string]string{"shape": "Mdiamond"}},
+			{ID: "work", Attrs: map[string]string{"shape": "box", "max_retries": "5"}},
+			{ID: "done", Attrs: map[string]string{"shape": "Msquare"}},
+		},
+		Edges: []*dot.Edge{
+			{From: "start", To: "work", Attrs: map[string]string{}},
+			{From: "work", To: "done", Attrs: map[string]string{}},
+		},
+	}
+
+	attemptCount := 0
+	failBackend := &callbackBackend{fn: func(ctx context.Context, node *dot.Node) (BackendResult, error) {
+		attemptCount++
+		return BackendResult{}, fmt.Errorf("always fails")
+	}}
+
+	registry := DefaultHandlerRegistry(CodergenHandler{Backend: failBackend})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	result, err := Run(ctx, RunConfig{
+		Graph:    g,
+		LogsRoot: t.TempDir(),
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != StatusFail {
+		t.Errorf("expected fail status, got %s", result.Status)
+	}
+	workOutcome, ok := result.NodeOutcomes["work"]
+	if !ok {
+		t.Fatal("expected outcome for node 'work'")
+	}
+	if !strings.Contains(workOutcome.FailureReason, "canceled") {
+		t.Errorf("expected cancellation in work node failure reason, got %q", workOutcome.FailureReason)
+	}
+	if attemptCount > 3 {
+		t.Errorf("expected cancellation to limit retries, but got %d attempts", attemptCount)
+	}
+}
+
+func TestRun_DeadlineExceeded(t *testing.T) {
+	backend := &blockingBackend{}
+	registry := DefaultHandlerRegistry(CodergenHandler{Backend: backend})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	result, err := Run(ctx, RunConfig{
+		Graph:    linearGraph(),
+		LogsRoot: t.TempDir(),
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != StatusFail {
+		t.Errorf("expected fail status, got %s", result.Status)
+	}
+	workOutcome, ok := result.NodeOutcomes["work"]
+	if !ok {
+		t.Fatal("expected outcome for node 'work'")
+	}
+	if !strings.Contains(workOutcome.FailureReason, "deadline") {
+		t.Errorf("expected deadline in work node failure reason, got %q", workOutcome.FailureReason)
+	}
+}
+
+func TestRun_SimulatedModeStillWorks(t *testing.T) {
+	registry := DefaultHandlerRegistry(CodergenHandler{Backend: SimulatedBackend{}})
+
+	result, err := Run(context.Background(), RunConfig{
+		Graph:    linearGraph(),
+		LogsRoot: t.TempDir(),
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if diff := cmp.Diff(StatusSuccess, result.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// callbackBackend delegates to a function, useful for tests that need custom
+// per-call behavior.
+type callbackBackend struct {
+	fn func(ctx context.Context, node *dot.Node) (BackendResult, error)
+}
+
+func (b *callbackBackend) Run(ctx context.Context, node *dot.Node, _ string, _ *Context) (BackendResult, error) {
+	return b.fn(ctx, node)
 }

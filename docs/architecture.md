@@ -185,7 +185,7 @@ flowchart TD
 The registry maps tool names to their implementations. Each tool is a `(ToolDefinition, ToolExecutor)` pair:
 
 ```
-ToolExecutor = func(args json.RawMessage, workDir string) (string, error)
+ToolExecutor = func(ctx context.Context, args json.RawMessage, workDir string) (string, error)
 
 RegisteredTool
   Definition  ToolDefinition    -- name, description, JSON Schema
@@ -410,7 +410,7 @@ Fallback: If no unconditional edges exist, pick from ALL edges by weight.
 classDiagram
     class Handler {
         <<interface>>
-        Execute(node, ctx, graph, logsRoot) Outcome
+        Execute(ctx, node, pctx, graph, logsRoot) Outcome
     }
 
     class HandlerRegistry {
@@ -449,7 +449,7 @@ classDiagram
 
     class CodergenBackend {
         <<interface>>
-        Run(node, prompt, ctx) BackendResult error
+        Run(ctx, node, prompt, pctx) BackendResult error
     }
 
     class AgentBackend {
@@ -457,11 +457,11 @@ classDiagram
         Model string
         ModelOverride string
         WorkDir string
-        Run(node, prompt, ctx) BackendResult error
+        Run(ctx, node, prompt, pctx) BackendResult error
     }
 
     class SimulatedBackend {
-        Run(node, prompt, ctx) BackendResult error
+        Run(ctx, node, prompt, pctx) BackendResult error
     }
 
     Handler <|.. StartHandler
@@ -501,10 +501,10 @@ sequenceDiagram
     participant AgentLoop as agent.RunTaskCapture
     participant LLM as OpenRouter
 
-    Engine->>Codergen: Execute(node, ctx, graph, logsRoot)
+    Engine->>Codergen: Execute(ctx, node, pctx, graph, logsRoot)
     Codergen->>Codergen: Expand $goal in prompt
     Codergen->>Codergen: Write prompt.md to logs
-    Codergen->>Backend: Run(node, prompt, ctx)
+    Codergen->>Backend: Run(ctx, node, prompt, pctx)
     Backend->>Backend: Resolve model (node/override/default)
     Backend->>AgentLoop: RunTaskCapture(client, model, prompt, workDir)
     AgentLoop->>LLM: Complete (with tools)
@@ -665,6 +665,20 @@ On exhaustion:
   If allow_partial=true -> return PARTIAL_SUCCESS
   Otherwise -> return FAIL
 ```
+
+#### Run-Scoped Context Propagation
+
+A Go `context.Context` is threaded from the CLI runner through the full execution stack. This serves a different purpose than `pipeline.Context` (cross-stage key-value state): the Go context carries runtime lifecycle signals — cancellation, deadlines, and shutdown.
+
+**Signal handling:** `cmd/run-pipeline` creates a root context via `signal.NotifyContext(context.Background(), SIGINT, SIGTERM)`. A Ctrl-C cancels the context, causing the pipeline to stop in bounded time.
+
+**Cancellation checkpoints:**
+- Engine loop: checks `ctx.Err()` at the top of each iteration
+- `executeWithRetry`: checks `ctx.Err()` before each retry attempt; uses `select` with `ctx.Done()` during backoff sleeps so cancellation interrupts waits
+- `CodergenBackend.Run`: passes ctx to `agent.RunTaskCapture`, which passes it to `client.Complete` (LLM calls honor cancellation)
+- Shell tool: uses ctx as the parent for per-command timeouts, so cancellation kills in-flight Docker commands
+- `recordStageResult`: derives its DB write timeout from ctx
+- `recorder.FinishRun`: uses a fresh `context.Background()` with a 10s timeout so the final run status is always persisted, even after cancellation
 
 #### Validation (Lint Rules)
 
@@ -864,6 +878,7 @@ Several defense-in-depth measures have been added beyond the basic implementatio
 | Pipeline engine | Agent exhaustion detection: `ErrRoundLimitReached` prevents silent failures | `agent/agent.go` |
 | Pipeline engine | Budget cap with 50%/75% threshold warnings | `pipeline/engine.go` |
 | Pipeline engine | Checkpoint warnings: save errors surfaced via `RunResult.Warnings` | `pipeline/engine.go` |
+| Pipeline engine | Cancellation-aware: context propagated through all layers; signal handling stops runs in bounded time | `pipeline/engine.go` |
 | Runner | Pre-flight checklist: validates workdir, API key, Docker, model IDs, budget | `cmd/run-pipeline/main.go` |
 | DOT parser | Recursion depth limit: max 50 nested subgraphs prevents stack overflow | `dot/parser.go` |
 

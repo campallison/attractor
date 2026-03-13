@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -17,7 +18,7 @@ import (
 // StartHandler is a no-op handler for the pipeline entry point.
 type StartHandler struct{}
 
-func (h StartHandler) Execute(_ *dot.Node, _ *Context, _ *dot.Graph, _ string) Outcome {
+func (h StartHandler) Execute(_ context.Context, _ *dot.Node, _ *Context, _ *dot.Graph, _ string) Outcome {
 	return Outcome{Status: StatusSuccess}
 }
 
@@ -27,7 +28,7 @@ func (h StartHandler) Execute(_ *dot.Node, _ *Context, _ *dot.Graph, _ string) O
 // enforcement is handled by the engine, not by this handler.
 type ExitHandler struct{}
 
-func (h ExitHandler) Execute(_ *dot.Node, _ *Context, _ *dot.Graph, _ string) Outcome {
+func (h ExitHandler) Execute(_ context.Context, _ *dot.Node, _ *Context, _ *dot.Graph, _ string) Outcome {
 	return Outcome{Status: StatusSuccess}
 }
 
@@ -37,7 +38,7 @@ func (h ExitHandler) Execute(_ *dot.Node, _ *Context, _ *dot.Graph, _ string) Ou
 // actual routing logic lives in the engine's edge selection algorithm.
 type ConditionalHandler struct{}
 
-func (h ConditionalHandler) Execute(node *dot.Node, _ *Context, _ *dot.Graph, _ string) Outcome {
+func (h ConditionalHandler) Execute(_ context.Context, node *dot.Node, _ *Context, _ *dot.Graph, _ string) Outcome {
 	return Outcome{
 		Status: StatusSuccess,
 		Notes:  "conditional node evaluated: " + node.ID,
@@ -65,13 +66,13 @@ type BackendResult struct {
 
 // CodergenBackend is the interface for LLM execution backends.
 type CodergenBackend interface {
-	Run(node *dot.Node, prompt string, ctx *Context) (BackendResult, error)
+	Run(ctx context.Context, node *dot.Node, prompt string, pctx *Context) (BackendResult, error)
 }
 
 // CheckRunner executes a shell command (typically inside the Docker sandbox)
 // and returns its combined stdout+stderr output. A nil error means the command
 // exited 0. Used by build gates to run compilation checks.
-type CheckRunner func(cmd string) (output string, err error)
+type CheckRunner func(ctx context.Context, cmd string) (output string, err error)
 
 // CodergenHandler is the default handler for all LLM task nodes (shape=box).
 // It expands template variables in the prompt, calls the backend, and writes
@@ -90,12 +91,12 @@ type CodergenHandler struct {
 	WorkDir     string
 }
 
-func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, logsRoot string) Outcome {
+func (h CodergenHandler) Execute(ctx context.Context, node *dot.Node, pctx *Context, g *dot.Graph, logsRoot string) Outcome {
 	prompt := node.Prompt()
 	if prompt == "" {
 		prompt = node.NodeLabel()
 	}
-	prompt = expandVariables(prompt, g, ctx)
+	prompt = expandVariables(prompt, g, pctx)
 
 	slog.Info("pipeline.stage.start", "node", node.ID, "prompt_len", len(prompt))
 
@@ -106,7 +107,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	// Scratch lifecycle: set up _scratch/ before the agent runs.
 	// WorkDir is intentionally left empty in simulate mode to skip scratch.
 	if h.WorkDir != "" {
-		completedRaw := ctx.GetString("completed_stages")
+		completedRaw := pctx.GetString("completed_stages")
 		var completed []string
 		if completedRaw != "" {
 			completed = strings.Split(completedRaw, ",")
@@ -181,7 +182,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	var buildGatePassed *bool
 
 	if h.Backend != nil {
-		result, err := h.Backend.Run(node, prompt, ctx)
+		result, err := h.Backend.Run(ctx, node, prompt, pctx)
 		if err != nil {
 			slog.Warn("pipeline.stage.fail", "node", node.ID, "error", err)
 			outcome := Outcome{
@@ -239,7 +240,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 			for attempt := 1; attempt <= maxAttempts; attempt++ {
 				buildGateAttempts = attempt
 				slog.Info("pipeline.buildgate", "node", node.ID, "attempt", attempt, "cmd", checkCmd)
-				checkOutput, checkErr := h.CheckRunner(checkCmd)
+				checkOutput, checkErr := h.CheckRunner(ctx, checkCmd)
 				if checkErr == nil {
 					slog.Info("pipeline.buildgate.pass", "node", node.ID, "attempt", attempt)
 					passed := true
@@ -271,7 +272,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 
 				fixPrompt := prompt + "\n\n--- BUILD GATE FAILURE ---\nThe following compilation/check errors were found after your changes. Fix them:\n\n" + checkOutput +
 				"\n\nIf you maintained working notes in _scratch/, check them for context from your previous attempt before starting your fix."
-				fixResult, fixErr := h.Backend.Run(node, fixPrompt, ctx)
+				fixResult, fixErr := h.Backend.Run(ctx, node, fixPrompt, pctx)
 				if fixErr != nil {
 					slog.Warn("pipeline.buildgate.fix.error", "node", node.ID, "error", fixErr)
 					fsDiff := captureFilesystemDiff()
@@ -364,7 +365,7 @@ func (h CodergenHandler) Execute(node *dot.Node, ctx *Context, g *dot.Graph, log
 	}
 	stageSummary := buildStageSummary(node.ID, files, responseText, scratchSummary, fsDiffStr)
 
-	completedStages := ctx.GetString("completed_stages")
+	completedStages := pctx.GetString("completed_stages")
 	if completedStages != "" {
 		completedStages += "," + node.ID
 	} else {
@@ -590,7 +591,7 @@ func DefaultHandlerRegistry(codergen CodergenHandler) *HandlerRegistry {
 // pipeline engine without making real LLM calls.
 type SimulatedBackend struct{}
 
-func (b SimulatedBackend) Run(node *dot.Node, prompt string, _ *Context) (BackendResult, error) {
+func (b SimulatedBackend) Run(_ context.Context, node *dot.Node, prompt string, _ *Context) (BackendResult, error) {
 	return BackendResult{
 		Response: fmt.Sprintf("[simulated] completed stage %s", node.ID),
 	}, nil

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -51,7 +52,7 @@ func ReadFileTool() RegisteredTool {
 	}
 }
 
-func executeReadFile(rawArgs json.RawMessage, workDir string) (string, error) {
+func executeReadFile(_ context.Context, rawArgs json.RawMessage, workDir string) (string, error) {
 	var args readFileArgs
 	if err := json.Unmarshal(rawArgs, &args); err != nil {
 		return "", fmt.Errorf("invalid read_file arguments: %w", err)

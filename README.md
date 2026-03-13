@@ -160,6 +160,7 @@ The runner performs a pre-flight checklist (workdir, API key, Docker, model vali
 | Working Memory | `_scratch/` directory with engine lifecycle | Agents maintain working notes; engine seeds context, verifies summary, archives, and cleans between stages |
 | Behavioral Detection | Read-loop detection, nudge, escalation, empty-output | Detects 5+ consecutive read-only rounds, injects a course-correction nudge, and terminates the stage early if the pattern persists after nudging; warns when a stage produces no deliverable files |
 | Filesystem Observation | Directory snapshots + diff between stages | Ground-truth detection of what files an agent added, removed, or modified — independent of conversation reports; enhances empty-output detection and provides diffs for downstream context |
+| Run-Scoped Context | `context.Context` threaded through all layers | Signal handling (SIGINT/SIGTERM) cancels runs in bounded time; deadlines and programmatic cancellation supported throughout |
 | Observability Database | Local PostgreSQL via Docker | Optional persistence of run/stage/event data for cross-run analysis; `NopRecorder` when no DB configured |
 | Structured Logging | `log/slog` multi-handler | Always-on INFO to terminal, DEBUG to JSON file; no toggle flag |
 

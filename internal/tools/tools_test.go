@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -40,7 +41,7 @@ func TestRegistryRegisterAndGet(t *testing.T) {
 			for _, name := range tt.register {
 				r.Register(RegisteredTool{
 					Definition: llm.ToolDefinition{Name: name},
-					Execute:    func(args json.RawMessage, workDir string) (string, error) { return "", nil },
+					Execute:    func(_ context.Context, args json.RawMessage, workDir string) (string, error) { return "", nil },
 				})
 			}
 			_, found := r.Get(tt.lookup)
@@ -55,11 +56,11 @@ func TestRegistryDefinitions(t *testing.T) {
 	r := NewRegistry()
 	r.Register(RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "alpha", Description: "tool a"},
-		Execute:    func(args json.RawMessage, workDir string) (string, error) { return "", nil },
+		Execute:    func(_ context.Context, args json.RawMessage, workDir string) (string, error) { return "", nil },
 	})
 	r.Register(RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "beta", Description: "tool b"},
-		Execute:    func(args json.RawMessage, workDir string) (string, error) { return "", nil },
+		Execute:    func(_ context.Context, args json.RawMessage, workDir string) (string, error) { return "", nil },
 	})
 
 	defs := r.Definitions()

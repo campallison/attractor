@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -40,7 +41,7 @@ func WriteFileTool() RegisteredTool {
 	}
 }
 
-func executeWriteFile(rawArgs json.RawMessage, workDir string) (string, error) {
+func executeWriteFile(_ context.Context, rawArgs json.RawMessage, workDir string) (string, error) {
 	var args writeFileArgs
 	if err := json.Unmarshal(rawArgs, &args); err != nil {
 		return "", fmt.Errorf("invalid write_file arguments: %w", err)

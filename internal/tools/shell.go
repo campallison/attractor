@@ -58,7 +58,7 @@ func ShellTool(dockerImage string) RegisteredTool {
 // the client disconnects. For stronger enforcement, wrap commands with the
 // `timeout` utility inside the container (e.g., `sh -c "timeout 120 <cmd>"`).
 func makeShellExecutor(dockerImage string) ToolExecutor {
-	return func(rawArgs json.RawMessage, workDir string) (string, error) {
+	return func(ctx context.Context, rawArgs json.RawMessage, workDir string) (string, error) {
 		var args shellArgs
 		if err := json.Unmarshal(rawArgs, &args); err != nil {
 			return "", fmt.Errorf("invalid shell arguments: %w", err)
@@ -78,7 +78,7 @@ func makeShellExecutor(dockerImage string) ToolExecutor {
 		}
 
 		timeout := time.Duration(timeoutMs) * time.Millisecond
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
 		cmd := exec.CommandContext(ctx, "docker", "exec", containerName, "sh", "-c", args.Command)

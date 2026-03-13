@@ -1,6 +1,8 @@
 package pipeline
 
 import (
+	"context"
+
 	"github.com/campallison/attractor/internal/dot"
 )
 
@@ -8,7 +10,7 @@ import (
 // execution engine dispatches to the appropriate handler based on the node's
 // type or shape.
 type Handler interface {
-	Execute(node *dot.Node, ctx *Context, g *dot.Graph, logsRoot string) Outcome
+	Execute(ctx context.Context, node *dot.Node, pctx *Context, g *dot.Graph, logsRoot string) Outcome
 }
 
 // HandlerRegistry maps handler type strings to handler instances and provides

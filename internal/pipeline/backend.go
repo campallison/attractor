@@ -18,7 +18,7 @@ type AgentBackend struct {
 	WorkDir       string
 }
 
-func (b AgentBackend) Run(node *dot.Node, prompt string, _ *Context) (BackendResult, error) {
+func (b AgentBackend) Run(ctx context.Context, node *dot.Node, prompt string, _ *Context) (BackendResult, error) {
 	model := b.ModelOverride
 	if model == "" {
 		model = node.Model()
@@ -26,7 +26,7 @@ func (b AgentBackend) Run(node *dot.Node, prompt string, _ *Context) (BackendRes
 			model = b.Model
 		}
 	}
-	text, usage, rounds, conversation, err := agent.RunTaskCapture(context.Background(), b.Client, model, prompt, b.WorkDir, node.MaxRounds())
+	text, usage, rounds, conversation, err := agent.RunTaskCapture(ctx, b.Client, model, prompt, b.WorkDir, node.MaxRounds())
 	if errors.Is(err, agent.ErrRoundLimitReached) || errors.Is(err, agent.ErrReadLoopDetected) {
 		reason := ExhaustionRoundLimit
 		if errors.Is(err, agent.ErrReadLoopDetected) {

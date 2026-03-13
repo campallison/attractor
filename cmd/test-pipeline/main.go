@@ -8,6 +8,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -96,7 +97,7 @@ func main() {
 
 	registry := pipeline.DefaultHandlerRegistry(pipeline.CodergenHandler{Backend: backend})
 
-	result, err := pipeline.Run(pipeline.RunConfig{
+	result, err := pipeline.Run(context.Background(), pipeline.RunConfig{
 		Graph:    g,
 		LogsRoot: logsRoot,
 		Registry: registry,

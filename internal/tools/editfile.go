@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -55,7 +56,7 @@ func EditFileTool() RegisteredTool {
 // the read and write will be silently overwritten. This is acceptable in the
 // current single-threaded agent loop but should be revisited if parallel tool
 // execution is added.
-func executeEditFile(rawArgs json.RawMessage, workDir string) (string, error) {
+func executeEditFile(_ context.Context, rawArgs json.RawMessage, workDir string) (string, error) {
 	var args editFileArgs
 	if err := json.Unmarshal(rawArgs, &args); err != nil {
 		return "", fmt.Errorf("invalid edit_file arguments: %w", err)

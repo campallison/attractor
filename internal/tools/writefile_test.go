@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -54,7 +55,7 @@ func TestExecuteWriteFile(t *testing.T) {
 				FilePath: tt.filePath,
 				Content:  tt.content,
 			})
-			got, err := executeWriteFile(rawArgs, dir)
+			got, err := executeWriteFile(context.Background(), rawArgs, dir)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -95,7 +96,7 @@ func TestExecuteWriteFile_PathTraversal(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			rawArgs, _ := json.Marshal(writeFileArgs{FilePath: tt.path, Content: "malicious"})
-			_, err := executeWriteFile(rawArgs, dir)
+			_, err := executeWriteFile(context.Background(), rawArgs, dir)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
