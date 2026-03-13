@@ -672,6 +672,10 @@ On exhaustion:
   Otherwise -> return FAIL
 ```
 
+**Attempt-aware accounting:** Token usage is accumulated across all engine retry attempts. When a stage fails on attempt 1 (consuming tokens) and succeeds on attempt 2, the returned `Outcome.Usage` reflects the sum of both attempts' tokens and rounds. The `Outcome.Attempts` field records how many times the handler was invoked (1 = no retries, 0 = canceled before any attempt). Budget enforcement sees cumulative usage, preventing retries from silently exceeding token caps.
+
+Engine-level retries (`Attempts`) are tracked separately from build-gate repair attempts (`BuildGateAttempts`). Build-gate retries accumulate usage within a single handler invocation; engine retries accumulate usage across handler invocations. Both contribute to the same cumulative `StageUsage`.
+
 #### Run-Scoped Context Propagation
 
 A Go `context.Context` is threaded from the CLI runner through the full execution stack. This serves a different purpose than `pipeline.Context` (cross-stage key-value state): the Go context carries runtime lifecycle signals — cancellation, deadlines, and shutdown.
@@ -818,8 +822,8 @@ flowchart LR
 Three tables in `internal/store/schema.sql`, applied automatically via `CREATE TABLE IF NOT EXISTS`:
 
 - **`pipeline_runs`** — one row per pipeline execution. Captures timestamps, status, pipeline metadata, model configuration, token usage, and stage counts. Note: `stages_total` counts only task nodes (LLM-calling stages) while `stages_completed` counts all nodes the engine traversed (including structural nodes like start and conditional). These use different counting methodologies intentionally — see `docs/development-notes/stages-total-vs-completed.md` for rationale.
-- **`stage_results`** — one row per stage per run. Captures node ID, model, status, token usage, duration, filesystem diff counts, scratch summary presence, and build gate results.
-- **`stage_events`** — notable moments within a stage: `nudge_injected`, `read_loop_terminated`, `build_gate_pass`, `build_gate_fail`, `empty_output`. Each event has a type, optional round number, and detail text.
+- **`stage_results`** — one row per stage per run. Captures node ID, model, status, token usage, duration, filesystem diff counts, scratch summary presence, build gate results, and engine retry count (`engine_attempts`).
+- **`stage_events`** — notable moments within a stage: `engine_retry`, `nudge_injected`, `read_loop_terminated`, `build_gate_pass`, `build_gate_fail`, `empty_output`. Each event has a type, optional round number, and detail text.
 
 ### Interface
 

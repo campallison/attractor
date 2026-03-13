@@ -38,6 +38,7 @@ type Outcome struct {
 	FailureReason    string
 	Usage            *StageUsage
 
+	Attempts             int             // engine-level handler invocations (1 = no retries, 0 = canceled before any attempt)
 	ExhaustionReason      string         // ExhaustionRoundLimit, ExhaustionReadLoop, or empty
 	PromptLength          int            // length of the prompt sent to the agent
 	ResponseLength        int            // length of the final response text

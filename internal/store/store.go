@@ -68,6 +68,7 @@ type StageResult struct {
 	ScratchSummaryProduced bool
 	BuildGateAttempts     int
 	BuildGatePassed       *bool // nil when no build gate configured
+	EngineAttempts        int   // engine-level handler invocations (1 = no retries)
 }
 
 // StageEvent captures a notable moment within a stage execution.

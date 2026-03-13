@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS stage_results (
     files_unchanged         INT DEFAULT 0,
     scratch_summary_produced BOOLEAN DEFAULT FALSE,
     build_gate_attempts     INT DEFAULT 0,
-    build_gate_passed       BOOLEAN
+    build_gate_passed       BOOLEAN,
+    engine_attempts         INT DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS stage_events (

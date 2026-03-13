@@ -433,21 +433,48 @@ func executeWithRetry(ctx context.Context, h Handler, node *dot.Node, pctx *Cont
 	}
 	maxAttempts := maxRetries + 1
 
+	var cumulativeUsage StageUsage
+	hasUsage := false
+
+	accumulate := func(u *StageUsage) {
+		if u == nil {
+			return
+		}
+		hasUsage = true
+		cumulativeUsage.InputTokens += u.InputTokens
+		cumulativeUsage.OutputTokens += u.OutputTokens
+		cumulativeUsage.TotalTokens += u.TotalTokens
+		cumulativeUsage.Rounds += u.Rounds
+		if cumulativeUsage.Model == "" {
+			cumulativeUsage.Model = u.Model
+		}
+	}
+
+	finalize := func(o Outcome, attempt int) Outcome {
+		o.Attempts = attempt
+		if hasUsage {
+			cu := cumulativeUsage
+			o.Usage = &cu
+		}
+		return o
+	}
+
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return Outcome{
+			return finalize(Outcome{
 				Status:        StatusFail,
 				FailureReason: fmt.Sprintf("canceled before attempt %d: %v", attempt, err),
-			}
+			}, attempt-1)
 		}
 		if attempt > 1 {
 			slog.Warn("pipeline.retry", "node", node.ID, "attempt", attempt, "max_attempts", maxAttempts)
 		}
 		outcome := h.Execute(ctx, node, pctx, g, logsRoot)
+		accumulate(outcome.Usage)
 
 		if outcome.Status.IsSuccess() {
 			nodeRetries[node.ID] = 0
-			return outcome
+			return finalize(outcome, attempt)
 		}
 
 		if outcome.Status == StatusRetry && attempt < maxAttempts {
@@ -457,10 +484,10 @@ func executeWithRetry(ctx context.Context, h Handler, node *dot.Node, pctx *Cont
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
-				return Outcome{
+				return finalize(Outcome{
 					Status:        StatusFail,
 					FailureReason: fmt.Sprintf("canceled during retry backoff: %v", ctx.Err()),
-				}
+				}, attempt)
 			}
 			continue
 		}
@@ -473,40 +500,36 @@ func executeWithRetry(ctx context.Context, h Handler, node *dot.Node, pctx *Cont
 				select {
 				case <-time.After(delay):
 				case <-ctx.Done():
-					return Outcome{
+					return finalize(Outcome{
 						Status:        StatusFail,
 						FailureReason: fmt.Sprintf("canceled during retry backoff: %v", ctx.Err()),
-					}
+					}, attempt)
 				}
 				continue
 			}
 			if node.AllowPartial() {
-				return Outcome{
-					Status: StatusPartialSuccess,
-					Notes:  "retries exhausted, partial accepted",
-				}
+				outcome.Status = StatusPartialSuccess
+				outcome.Notes = "retries exhausted, partial accepted"
+				return finalize(outcome, attempt)
 			}
-			return outcome
+			return finalize(outcome, attempt)
 		}
 
-		// For RETRY on last attempt:
 		if outcome.Status == StatusRetry && attempt >= maxAttempts {
 			if node.AllowPartial() {
-				return Outcome{
-					Status: StatusPartialSuccess,
-					Notes:  "retries exhausted, partial accepted",
-				}
+				outcome.Status = StatusPartialSuccess
+				outcome.Notes = "retries exhausted, partial accepted"
+				return finalize(outcome, attempt)
 			}
-			return Outcome{
-				Status:        StatusFail,
-				FailureReason: "max retries exceeded",
-			}
+			outcome.Status = StatusFail
+			outcome.FailureReason = "max retries exceeded"
+			return finalize(outcome, attempt)
 		}
 
-		return outcome
+		return finalize(outcome, attempt)
 	}
 
-	return Outcome{Status: StatusFail, FailureReason: "max retries exceeded"}
+	return finalize(Outcome{Status: StatusFail, FailureReason: "max retries exceeded"}, maxAttempts)
 }
 
 // backoffDelay calculates exponential backoff with jitter for the given attempt
@@ -555,6 +578,7 @@ func recordStageResult(ctx context.Context, rec store.RunRecorder, runID uuid.UU
 		ScratchSummaryProduced: outcome.ScratchSummaryProduced,
 		BuildGateAttempts:      outcome.BuildGateAttempts,
 		BuildGatePassed:        outcome.BuildGatePassed,
+		EngineAttempts:         outcome.Attempts,
 	}
 	if outcome.Usage != nil {
 		sr.Model = outcome.Usage.Model
@@ -579,6 +603,14 @@ func recordStageResult(ctx context.Context, rec store.RunRecorder, runID uuid.UU
 	// Derive events from the outcome.
 	var events []store.StageEvent
 
+	if outcome.Attempts > 1 {
+		events = append(events, store.StageEvent{
+			StageID:   stageID,
+			RunID:     runID,
+			EventType: "engine_retry",
+			Detail:    fmt.Sprintf("%s after %d engine attempts", outcome.Status, outcome.Attempts),
+		})
+	}
 	if outcome.ExhaustionReason == ExhaustionReadLoop {
 		events = append(events, store.StageEvent{
 			StageID:   stageID,

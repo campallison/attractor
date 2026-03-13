@@ -88,8 +88,9 @@ func (s *PostgresStore) RecordStage(ctx context.Context, stage StageResult) (int
 			exhaustion_reason, rounds, input_tokens, output_tokens, total_tokens,
 			duration_ms, prompt_length, response_length,
 			files_added, files_modified, files_removed, files_unchanged,
-			scratch_summary_produced, build_gate_attempts, build_gate_passed
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+			scratch_summary_produced, build_gate_attempts, build_gate_passed,
+			engine_attempts
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 		RETURNING id`,
 		stage.RunID, stage.NodeID, stage.Sequence, stage.Model, stage.Status,
 		nullIfEmpty(stage.FailureReason), nullIfEmpty(stage.ExhaustionReason),
@@ -97,6 +98,7 @@ func (s *PostgresStore) RecordStage(ctx context.Context, stage StageResult) (int
 		stage.DurationMs, stage.PromptLength, stage.ResponseLength,
 		stage.FilesAdded, stage.FilesModified, stage.FilesRemoved, stage.FilesUnchanged,
 		stage.ScratchSummaryProduced, stage.BuildGateAttempts, stage.BuildGatePassed,
+		stage.EngineAttempts,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("store: record stage: %w", err)

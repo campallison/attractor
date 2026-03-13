@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/campallison/attractor/internal/dot"
+	"github.com/campallison/attractor/internal/llm"
 	"github.com/google/go-cmp/cmp"
 )
 
@@ -982,4 +983,199 @@ type callbackBackend struct {
 
 func (b *callbackBackend) Run(ctx context.Context, node *dot.Node, _ string, _ *Context) (BackendResult, error) {
 	return b.fn(ctx, node)
+}
+
+// --- Attempt-aware retry accounting tests ---
+
+func TestRun_RetryAccumulatesUsage(t *testing.T) {
+	g := &dot.Graph{
+		Name:  "RetryUsage",
+		Attrs: map[string]string{},
+		Nodes: []*dot.Node{
+			{ID: "start", Attrs: map[string]string{"shape": "Mdiamond"}},
+			{ID: "work", Attrs: map[string]string{"shape": "box", "prompt": "do it", "max_retries": "2"}},
+			{ID: "exit", Attrs: map[string]string{"shape": "Msquare"}},
+		},
+		Edges: []*dot.Edge{
+			{From: "start", To: "work", Attrs: map[string]string{}},
+			{From: "work", To: "exit", Attrs: map[string]string{}},
+		},
+	}
+
+	callCount := 0
+	backend := &callbackBackend{fn: func(_ context.Context, node *dot.Node) (BackendResult, error) {
+		callCount++
+		if callCount == 1 {
+			return BackendResult{
+				Response:         "partial work",
+				Usage:            llm.Usage{InputTokens: 3000, OutputTokens: 800, TotalTokens: 3800},
+				Model:            "test-model",
+				Rounds:           5,
+				Exhausted:        true,
+				ExhaustionReason: ExhaustionRoundLimit,
+			}, nil
+		}
+		return BackendResult{
+			Response: "done",
+			Usage:    llm.Usage{InputTokens: 2000, OutputTokens: 600, TotalTokens: 2600},
+			Model:    "test-model",
+			Rounds:   3,
+		}, nil
+	}}
+
+	result, err := Run(context.Background(), RunConfig{
+		Graph:    g,
+		LogsRoot: t.TempDir(),
+		Registry: DefaultHandlerRegistry(CodergenHandler{Backend: backend}),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if diff := cmp.Diff(StatusSuccess, result.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+
+	if diff := cmp.Diff(5000, result.TotalUsage.InputTokens); diff != "" {
+		t.Errorf("total input tokens should sum both attempts (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(1400, result.TotalUsage.OutputTokens); diff != "" {
+		t.Errorf("total output tokens should sum both attempts (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(6400, result.TotalUsage.TotalTokens); diff != "" {
+		t.Errorf("total tokens should sum both attempts (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(8, result.TotalUsage.Rounds); diff != "" {
+		t.Errorf("total rounds should sum both attempts (-want +got):\n%s", diff)
+	}
+
+	workUsage, ok := result.StageUsages["work"]
+	if !ok {
+		t.Fatal("expected StageUsages to contain work")
+	}
+	if diff := cmp.Diff(6400, workUsage.TotalTokens); diff != "" {
+		t.Errorf("stage usage should reflect cumulative tokens (-want +got):\n%s", diff)
+	}
+
+	workOutcome := result.NodeOutcomes["work"]
+	if diff := cmp.Diff(2, workOutcome.Attempts); diff != "" {
+		t.Errorf("Attempts should be 2 (-want +got):\n%s", diff)
+	}
+}
+
+func TestRun_RetryExhaustedAccumulatesUsage(t *testing.T) {
+	g := &dot.Graph{
+		Name:  "RetryExhaust",
+		Attrs: map[string]string{},
+		Nodes: []*dot.Node{
+			{ID: "start", Attrs: map[string]string{"shape": "Mdiamond"}},
+			{ID: "work", Attrs: map[string]string{"shape": "box", "prompt": "do it", "max_retries": "1"}},
+			{ID: "exit", Attrs: map[string]string{"shape": "Msquare"}},
+		},
+		Edges: []*dot.Edge{
+			{From: "start", To: "work", Attrs: map[string]string{}},
+			{From: "work", To: "exit", Attrs: map[string]string{}},
+		},
+	}
+
+	backend := &callbackBackend{fn: func(_ context.Context, _ *dot.Node) (BackendResult, error) {
+		return BackendResult{
+			Response:         "partial",
+			Usage:            llm.Usage{InputTokens: 4000, OutputTokens: 1000, TotalTokens: 5000},
+			Model:            "test-model",
+			Rounds:           6,
+			Exhausted:        true,
+			ExhaustionReason: ExhaustionRoundLimit,
+		}, nil
+	}}
+
+	registry := NewHandlerRegistry(CodergenHandler{Backend: nil})
+	registry.Register("start", StartHandler{})
+	registry.Register("exit", ExitHandler{})
+	registry.Register("codergen", CodergenHandler{Backend: backend})
+
+	result, err := Run(context.Background(), RunConfig{
+		Graph:    g,
+		LogsRoot: t.TempDir(),
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Both attempts fail (exhausted), so the pipeline should fail via
+	// the unconditional-edge halt logic.
+	if diff := cmp.Diff(StatusFail, result.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+
+	// Both attempts' usage should be accumulated.
+	if diff := cmp.Diff(10000, result.TotalUsage.TotalTokens); diff != "" {
+		t.Errorf("total tokens should include both exhausted attempts (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(12, result.TotalUsage.Rounds); diff != "" {
+		t.Errorf("total rounds should include both exhausted attempts (-want +got):\n%s", diff)
+	}
+
+	workOutcome := result.NodeOutcomes["work"]
+	if diff := cmp.Diff(2, workOutcome.Attempts); diff != "" {
+		t.Errorf("Attempts should be 2 (1 retry) (-want +got):\n%s", diff)
+	}
+}
+
+func TestRun_RetryBudgetEnforcementIncludesAllAttempts(t *testing.T) {
+	g := &dot.Graph{
+		Name:  "RetryBudget",
+		Attrs: map[string]string{},
+		Nodes: []*dot.Node{
+			{ID: "start", Attrs: map[string]string{"shape": "Mdiamond"}},
+			{ID: "work", Attrs: map[string]string{"shape": "box", "prompt": "do it", "max_retries": "2"}},
+			{ID: "exit", Attrs: map[string]string{"shape": "Msquare"}},
+		},
+		Edges: []*dot.Edge{
+			{From: "start", To: "work", Attrs: map[string]string{}},
+			{From: "work", To: "exit", Attrs: map[string]string{}},
+		},
+	}
+
+	callCount := 0
+	backend := &callbackBackend{fn: func(_ context.Context, _ *dot.Node) (BackendResult, error) {
+		callCount++
+		if callCount == 1 {
+			return BackendResult{
+				Response:         "partial",
+				Usage:            llm.Usage{InputTokens: 3000, OutputTokens: 1000, TotalTokens: 4000},
+				Model:            "test-model",
+				Rounds:           4,
+				Exhausted:        true,
+				ExhaustionReason: ExhaustionRoundLimit,
+			}, nil
+		}
+		// Second attempt succeeds but pushes cumulative total over budget.
+		return BackendResult{
+			Response: "done",
+			Usage:    llm.Usage{InputTokens: 3000, OutputTokens: 1000, TotalTokens: 4000},
+			Model:    "test-model",
+			Rounds:   4,
+		}, nil
+	}}
+
+	// Budget of 5000: attempt 1 uses 4000, attempt 2 uses 4000 -> 8000 total exceeds budget.
+	result, err := Run(context.Background(), RunConfig{
+		Graph:           g,
+		LogsRoot:        t.TempDir(),
+		Registry:        DefaultHandlerRegistry(CodergenHandler{Backend: backend}),
+		MaxBudgetTokens: 5000,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if diff := cmp.Diff(StatusFail, result.Status); diff != "" {
+		t.Errorf("status mismatch (-want +got):\n%s", diff)
+	}
+	if !strings.Contains(result.FailureReason, "budget cap") {
+		t.Errorf("expected failure reason to mention budget cap, got %q", result.FailureReason)
+	}
+	if diff := cmp.Diff(8000, result.TotalUsage.TotalTokens); diff != "" {
+		t.Errorf("total tokens should reflect both attempts (-want +got):\n%s", diff)
+	}
 }
