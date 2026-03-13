@@ -17,7 +17,6 @@ import (
 const (
 	defaultTimeoutMs = 10_000
 	maxTimeoutMs     = 600_000
-	containerName    = "attractor-sandbox"
 )
 
 type shellArgs struct {
@@ -26,8 +25,8 @@ type shellArgs struct {
 }
 
 // ShellTool returns the registered shell tool. Commands are executed inside a
-// Docker container identified by dockerImage.
-func ShellTool(dockerImage string) RegisteredTool {
+// Docker container identified by containerName.
+func ShellTool(containerName string) RegisteredTool {
 	return RegisteredTool{
 		Definition: llm.ToolDefinition{
 			Name:        "shell",
@@ -47,7 +46,7 @@ func ShellTool(dockerImage string) RegisteredTool {
 				"required": ["command"]
 			}`),
 		},
-		Execute: makeShellExecutor(dockerImage),
+		Execute: makeShellExecutor(containerName),
 	}
 }
 
@@ -57,7 +56,7 @@ func ShellTool(dockerImage string) RegisteredTool {
 // client process. The command running inside the container may continue after
 // the client disconnects. For stronger enforcement, wrap commands with the
 // `timeout` utility inside the container (e.g., `sh -c "timeout 120 <cmd>"`).
-func makeShellExecutor(dockerImage string) ToolExecutor {
+func makeShellExecutor(containerName string) ToolExecutor {
 	return func(ctx context.Context, rawArgs json.RawMessage, workDir string) (string, error) {
 		var args shellArgs
 		if err := json.Unmarshal(rawArgs, &args); err != nil {
@@ -208,24 +207,21 @@ func containsFlag(tokens []string, flag string) bool {
 	return false
 }
 
-// EnsureContainer starts the sandbox Docker container if it is not already
+// EnsureContainer starts a named Docker container if it is not already
 // running. It mounts workDir into /workspace inside the container.
 //
 // This function is not called automatically by the shell tool executor.
-// The caller (e.g., the agent entrypoint or test harness) is responsible for
+// The caller (e.g., the pipeline runner or test harness) is responsible for
 // calling EnsureContainer before running tasks and StopContainer afterward.
-func EnsureContainer(dockerImage, workDir string) error {
-	// Check if container is already running.
+func EnsureContainer(dockerImage, containerName, workDir string) error {
 	check := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerName)
 	out, err := check.Output()
 	if err == nil && strings.TrimSpace(string(out)) == "true" {
 		return nil
 	}
 
-	// Remove any stopped container with the same name.
 	_ = exec.Command("docker", "rm", "-f", containerName).Run()
 
-	// Start a new container.
 	run := exec.Command("docker", "run", "-d",
 		"--name", containerName,
 		"-v", workDir+":/workspace",
@@ -238,10 +234,10 @@ func EnsureContainer(dockerImage, workDir string) error {
 	return run.Run()
 }
 
-// StopContainer stops and removes the sandbox container.
+// StopContainer stops and removes the named sandbox container.
 //
-// Must be called explicitly by the caller when the agent session ends.
+// Must be called explicitly by the caller when the pipeline run ends.
 // If not called, the container will continue running indefinitely.
-func StopContainer() error {
+func StopContainer(containerName string) error {
 	return exec.Command("docker", "rm", "-f", containerName).Run()
 }

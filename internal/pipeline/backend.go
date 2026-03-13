@@ -6,6 +6,7 @@ import (
 
 	"github.com/campallison/attractor/internal/agent"
 	"github.com/campallison/attractor/internal/dot"
+	"github.com/campallison/attractor/internal/tools"
 )
 
 // AgentBackend implements CodergenBackend by delegating to the Layer 2 agent
@@ -16,6 +17,7 @@ type AgentBackend struct {
 	Model         string
 	ModelOverride string // when non-empty, used for ALL stages regardless of node/default model
 	WorkDir       string
+	Registry      *tools.Registry
 }
 
 func (b AgentBackend) Run(ctx context.Context, node *dot.Node, prompt string, _ *Context) (BackendResult, error) {
@@ -26,7 +28,7 @@ func (b AgentBackend) Run(ctx context.Context, node *dot.Node, prompt string, _ 
 			model = b.Model
 		}
 	}
-	text, usage, rounds, conversation, err := agent.RunTaskCapture(ctx, b.Client, model, prompt, b.WorkDir, node.MaxRounds())
+	text, usage, rounds, conversation, err := agent.RunTaskCapture(ctx, b.Client, model, prompt, b.WorkDir, node.MaxRounds(), b.Registry)
 	if errors.Is(err, agent.ErrRoundLimitReached) || errors.Is(err, agent.ErrReadLoopDetected) {
 		reason := ExhaustionRoundLimit
 		if errors.Is(err, agent.ErrReadLoopDetected) {

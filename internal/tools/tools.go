@@ -52,13 +52,13 @@ func (r *Registry) Definitions() []llm.ToolDefinition {
 
 // DefaultRegistry returns a registry pre-loaded with the standard tool set:
 // read_file, write_file, edit_file, and shell.
-// The dockerImage parameter specifies the Docker image/container used for
+// The containerName parameter identifies the Docker container used for
 // shell command execution.
-func DefaultRegistry(dockerImage string) *Registry {
+func DefaultRegistry(containerName string) *Registry {
 	r := NewRegistry()
 	r.Register(ReadFileTool())
 	r.Register(WriteFileTool())
 	r.Register(EditFileTool())
-	r.Register(ShellTool(dockerImage))
+	r.Register(ShellTool(containerName))
 	return r
 }

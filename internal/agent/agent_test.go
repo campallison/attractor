@@ -9,8 +9,13 @@ import (
 	"testing"
 
 	"github.com/campallison/attractor/internal/llm"
+	"github.com/campallison/attractor/internal/tools"
 	"github.com/google/go-cmp/cmp"
 )
+
+func testRegistry() *tools.Registry {
+	return tools.DefaultRegistry("test-sandbox")
+}
 
 // mockCompleter is a test double for Completer that returns pre-configured
 // responses in sequence.
@@ -69,7 +74,7 @@ func TestRunTaskTextOnly(t *testing.T) {
 		},
 	}
 
-	err := RunTask(context.Background(), mock, "test-model", "say hello", t.TempDir())
+	err := RunTask(context.Background(), mock, "test-model", "say hello", t.TempDir(), testRegistry())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,7 +97,7 @@ func TestRunTaskToolCallThenText(t *testing.T) {
 		},
 	}
 
-	err := RunTask(context.Background(), mock, "test-model", "create hello.txt", dir)
+	err := RunTask(context.Background(), mock, "test-model", "create hello.txt", dir, testRegistry())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -126,7 +131,7 @@ func TestRunTaskCapture_ReturnsUsageAndRounds(t *testing.T) {
 		},
 	}
 
-	text, usage, rounds, conversation, err := RunTaskCapture(context.Background(), mock, "test-model", "create test.txt", t.TempDir(), 0)
+	text, usage, rounds, conversation, err := RunTaskCapture(context.Background(), mock, "test-model", "create test.txt", t.TempDir(), 0, testRegistry())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -162,7 +167,7 @@ func TestRunTaskCapture_TextOnly(t *testing.T) {
 		},
 	}
 
-	text, usage, rounds, _, err := RunTaskCapture(context.Background(), mock, "test-model", "answer me", t.TempDir(), 0)
+	text, usage, rounds, _, err := RunTaskCapture(context.Background(), mock, "test-model", "answer me", t.TempDir(), 0, testRegistry())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -186,7 +191,7 @@ func TestRunTaskUnknownTool(t *testing.T) {
 		},
 	}
 
-	err := RunTask(context.Background(), mock, "test-model", "do something", t.TempDir())
+	err := RunTask(context.Background(), mock, "test-model", "do something", t.TempDir(), testRegistry())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -284,7 +289,7 @@ func TestRunTaskCapture_RoundLimitReached(t *testing.T) {
 	mock := &mixedToolCallCompleter{}
 
 	text, usage, rounds, conversation, err := RunTaskCapture(
-		context.Background(), mock, "test-model", "do infinite work", t.TempDir(), 0,
+		context.Background(), mock, "test-model", "do infinite work", t.TempDir(), 0, testRegistry(),
 	)
 
 	if !errors.Is(err, ErrRoundLimitReached) {
@@ -346,7 +351,7 @@ func TestRunTaskCapture_ReadLoopDetection(t *testing.T) {
 	mock := &infiniteToolCallCompleter{}
 
 	_, _, rounds, _, err := RunTaskCapture(
-		context.Background(), mock, "test-model", "analyze code", t.TempDir(), 20,
+		context.Background(), mock, "test-model", "analyze code", t.TempDir(), 20, testRegistry(),
 	)
 
 	// With C4 in place, a persistent read-loop now terminates early with
@@ -393,7 +398,7 @@ func TestRunTaskCapture_NudgeInjection(t *testing.T) {
 	// the agent doesn't also hit the second detection event (which would
 	// trigger early termination via C4).
 	_, _, _, conversation, err := RunTaskCapture(
-		context.Background(), mock, "test-model", "analyze code", t.TempDir(), 8,
+		context.Background(), mock, "test-model", "analyze code", t.TempDir(), 8, testRegistry(),
 	)
 
 	if !errors.Is(err, ErrRoundLimitReached) {
@@ -442,7 +447,7 @@ func TestRunTaskCapture_NudgeResetsCounter(t *testing.T) {
 	mock := &capturingReadCompleter{}
 
 	_, _, _, conversation, err := RunTaskCapture(
-		context.Background(), mock, "test-model", "analyze code", t.TempDir(), 8,
+		context.Background(), mock, "test-model", "analyze code", t.TempDir(), 8, testRegistry(),
 	)
 
 	if !errors.Is(err, ErrRoundLimitReached) {
@@ -466,7 +471,7 @@ func TestRunTaskCapture_ReadLoopTermination(t *testing.T) {
 	mock := &capturingReadCompleter{}
 
 	_, _, rounds, conversation, err := RunTaskCapture(
-		context.Background(), mock, "test-model", "analyze code", t.TempDir(), 20,
+		context.Background(), mock, "test-model", "analyze code", t.TempDir(), 20, testRegistry(),
 	)
 
 	if !errors.Is(err, ErrReadLoopDetected) {
@@ -514,7 +519,7 @@ func TestRunTaskCapture_ReadLoopResetsOnWrite(t *testing.T) {
 
 	mock := &mockCompleter{responses: responses}
 	text, _, rounds, _, err := RunTaskCapture(
-		context.Background(), mock, "test-model", "task", t.TempDir(), 0,
+		context.Background(), mock, "test-model", "task", t.TempDir(), 0, testRegistry(),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -532,7 +537,7 @@ func TestRunTaskCapture_CustomMaxRounds(t *testing.T) {
 	mock := &infiniteToolCallCompleter{}
 
 	_, _, rounds, _, err := RunTaskCapture(
-		context.Background(), mock, "test-model", "do work", t.TempDir(), customLimit,
+		context.Background(), mock, "test-model", "do work", t.TempDir(), customLimit, testRegistry(),
 	)
 
 	if !errors.Is(err, ErrRoundLimitReached) {

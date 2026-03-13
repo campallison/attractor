@@ -165,29 +165,56 @@ func main() {
 		fmt.Println("    Budget: unlimited")
 	}
 
-	var registry *pipeline.HandlerRegistry
+	// Record run start early so the run ID can seed the sandbox name.
+	startTime := time.Now()
+	effectiveModel := *model
+	if *modelOverride != "" {
+		effectiveModel = *modelOverride
+	}
+
+	runID, startErr := recorder.StartRun(context.Background(), store.PipelineRun{
+		PipelineFile:  *pipelineFile,
+		GraphName:     g.Name,
+		Goal:          g.Goal(),
+		DefaultModel:  *model,
+		ModelOverride: *modelOverride,
+		Simulate:      *simulate,
+		DockerImage:   *dockerImage,
+		BudgetTokens:  *budgetTokens,
+		StagesTotal:   countTaskNodes(g),
+	})
+	if startErr != nil {
+		fmt.Printf("    [!!] Failed to record run start: %v (continuing without persistence)\n", startErr)
+		runID = uuid.Nil
+		recorder = store.NopRecorder{}
+	}
+
+	var handlerRegistry *pipeline.HandlerRegistry
 
 	if *simulate {
 		fmt.Println("    Mode: SIMULATED (no LLM calls, no Docker)")
 		fmt.Println("    Build gates: skipped (simulate mode)")
-		registry = pipeline.DefaultHandlerRegistry(pipeline.CodergenHandler{Backend: pipeline.SimulatedBackend{}})
+		handlerRegistry = pipeline.DefaultHandlerRegistry(pipeline.CodergenHandler{Backend: pipeline.SimulatedBackend{}})
 	} else {
-		// 3b. Start Docker sandbox
+		containerName := sandboxName(runID)
+
 		if *noDocker {
 			fmt.Println("    Docker: DISABLED (shell commands will fail)")
 		} else {
-			fmt.Printf("    Docker: starting container with image %s...\n", *dockerImage)
-			if err := tools.EnsureContainer(*dockerImage, *workDir); err != nil {
+			fmt.Printf("    Docker: starting container %s with image %s...\n", containerName, *dockerImage)
+			if err := tools.EnsureContainer(*dockerImage, containerName, *workDir); err != nil {
 				log.Fatalf("Failed to start Docker sandbox: %v", err)
 			}
 			defer func() {
-				fmt.Println("Stopping Docker sandbox...")
-				if err := tools.StopContainer(); err != nil {
+				fmt.Printf("Stopping Docker sandbox %s...\n", containerName)
+				if err := tools.StopContainer(containerName); err != nil {
 					fmt.Printf("Warning: failed to stop container: %v\n", err)
 				}
 			}()
-			fmt.Println("    Docker: container running")
+			fmt.Printf("    Docker: container %s running\n", containerName)
 		}
+
+		toolRegistry := tools.DefaultRegistry(containerName)
 
 		var clientOpts []llm.ClientOption
 		if *zdr {
@@ -206,17 +233,18 @@ func main() {
 			Model:         *model,
 			ModelOverride: *modelOverride,
 			WorkDir:       *workDir,
+			Registry:      toolRegistry,
 		}
 
 		var checkRunner pipeline.CheckRunner
 		if !*noDocker {
-			checkRunner = makeCheckRunner()
+			checkRunner = makeCheckRunner(containerName)
 			fmt.Println("    Build gates: enabled")
 		} else {
 			fmt.Println("    Build gates: disabled (--no-docker)")
 		}
 
-		registry = pipeline.DefaultHandlerRegistry(pipeline.CodergenHandler{
+		handlerRegistry = pipeline.DefaultHandlerRegistry(pipeline.CodergenHandler{
 			Backend:     backend,
 			CheckRunner: checkRunner,
 			WorkDir:     *workDir,
@@ -226,34 +254,11 @@ func main() {
 	// 5. Run pipeline
 	fmt.Println("[5] Running pipeline...")
 	fmt.Println()
-	startTime := time.Now()
-
-	effectiveModel := *model
-	if *modelOverride != "" {
-		effectiveModel = *modelOverride
-	}
-
-	runID, startErr := recorder.StartRun(context.Background(), store.PipelineRun{
-		PipelineFile: *pipelineFile,
-		GraphName:    g.Name,
-		Goal:         g.Goal(),
-		DefaultModel: *model,
-		ModelOverride: *modelOverride,
-		Simulate:     *simulate,
-		DockerImage:  *dockerImage,
-		BudgetTokens: *budgetTokens,
-		StagesTotal:  countTaskNodes(g),
-	})
-	if startErr != nil {
-		fmt.Printf("    [!!] Failed to record run start: %v (continuing without persistence)\n", startErr)
-		runID = uuid.Nil
-		recorder = store.NopRecorder{}
-	}
 
 	result, err := pipeline.Run(ctx, pipeline.RunConfig{
 		Graph:           g,
 		LogsRoot:        logsRoot,
-		Registry:        registry,
+		Registry:        handlerRegistry,
 		MaxBudgetTokens: *budgetTokens,
 		Recorder:        recorder,
 		RunID:           runID,
@@ -567,11 +572,23 @@ func collectModelIDs(g *dot.Graph, defaultModel string) []string {
 	return models
 }
 
-func makeCheckRunner() pipeline.CheckRunner {
+// sandboxName returns a Docker container name derived from the run UUID.
+// Format: "attractor-<first 8 hex chars>". If runID is uuid.Nil (no database),
+// a fresh UUID is generated so the name is always unique.
+func sandboxName(runID uuid.UUID) string {
+	id := runID
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
+	hex := strings.ReplaceAll(id.String(), "-", "")
+	return "attractor-" + hex[:8]
+}
+
+func makeCheckRunner(containerName string) pipeline.CheckRunner {
 	return func(ctx context.Context, cmd string) (string, error) {
 		checkCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 		defer cancel()
-		dockerCmd := exec.CommandContext(checkCtx, "docker", "exec", "attractor-sandbox", "sh", "-c", cmd)
+		dockerCmd := exec.CommandContext(checkCtx, "docker", "exec", containerName, "sh", "-c", cmd)
 		out, err := dockerCmd.CombinedOutput()
 		return string(out), err
 	}

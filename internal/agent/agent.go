@@ -51,8 +51,10 @@ type Completer interface {
 // RunTask executes an agentic loop: sends a prompt to the LLM with tool
 // definitions, executes any tool calls the model requests, feeds results back,
 // and repeats until the model responds with text only or the round limit is hit.
-func RunTask(ctx context.Context, client Completer, model, prompt, workDir string) error {
-	registry := tools.DefaultRegistry("attractor-sandbox")
+//
+// The caller must supply a pre-built tool registry. Use tools.DefaultRegistry
+// to construct one with the standard tool set.
+func RunTask(ctx context.Context, client Completer, model, prompt, workDir string, registry *tools.Registry) error {
 	systemPrompt := BuildSystemPrompt(workDir)
 
 	conversation := []llm.Message{
@@ -147,13 +149,15 @@ func executeTool(ctx context.Context, registry *tools.Registry, tc llm.ToolCall,
 // maxRoundsOverride controls how many rounds the agent may run. When 0, the
 // package-level default (50) is used. Pipeline stages can set this via the
 // max_rounds DOT attribute to impose tighter or looser limits per stage.
-func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDir string, maxRoundsOverride int) (string, llm.Usage, int, []llm.Message, error) {
+//
+// The caller must supply a pre-built tool registry. Use tools.DefaultRegistry
+// to construct one with the standard tool set.
+func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDir string, maxRoundsOverride int, registry *tools.Registry) (string, llm.Usage, int, []llm.Message, error) {
 	limit := maxRounds
 	if maxRoundsOverride > 0 {
 		limit = maxRoundsOverride
 	}
 
-	registry := tools.DefaultRegistry("attractor-sandbox")
 	systemPrompt := BuildSystemPrompt(workDir)
 
 	conversation := []llm.Message{

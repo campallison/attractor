@@ -17,6 +17,7 @@ import (
 	"github.com/campallison/attractor/internal/dot"
 	"github.com/campallison/attractor/internal/llm"
 	"github.com/campallison/attractor/internal/pipeline"
+	"github.com/campallison/attractor/internal/tools"
 )
 
 const testPipeline = `digraph TestPipeline {
@@ -90,9 +91,10 @@ func main() {
 	defer os.RemoveAll(workDir)
 
 	backend := pipeline.AgentBackend{
-		Client:  client,
-		Model:   "anthropic/claude-sonnet-4",
-		WorkDir: workDir,
+		Client:   client,
+		Model:    "anthropic/claude-sonnet-4",
+		WorkDir:  workDir,
+		Registry: tools.DefaultRegistry("attractor-sandbox"),
 	}
 
 	registry := pipeline.DefaultHandlerRegistry(pipeline.CodergenHandler{Backend: backend})

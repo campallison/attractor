@@ -151,6 +151,7 @@ The runner performs a pre-flight checklist (workdir, API key, Docker, model vali
 | Language | Go | Strong typing maps well to the spec's structured data; good HTTP client and concurrency primitives |
 | LLM Provider | OpenRouter | Single API key for multiple model providers; OpenAI-compatible format means one adapter |
 | Shell Security | Docker | Commands run in an isolated container, not on the host machine |
+| Per-Run Sandbox | `attractor-<runID[:8]>` containers | Each pipeline run gets its own Docker container; tool registry is injected into the agent for clean dependency boundaries |
 | DOT Parser | Hand-rolled | Full control over the spec's strict subset, custom attribute types, and error messages |
 | Testing | Table-driven + go-cmp | Consistent patterns, readable diffs, easy to extend |
 | Build Gates | `check_cmd` attribute | Compiler-enforced correctness between stages; catches cross-file inconsistencies early |

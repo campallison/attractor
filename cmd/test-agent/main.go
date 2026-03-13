@@ -15,6 +15,7 @@ import (
 
 	"github.com/campallison/attractor/internal/agent"
 	"github.com/campallison/attractor/internal/llm"
+	"github.com/campallison/attractor/internal/tools"
 )
 
 func main() {
@@ -40,7 +41,8 @@ func main() {
 
 	prompt := "Create a file called hello.txt in the working directory containing exactly the text 'Hello, Attractor!' (no trailing newline). Use the write_file tool."
 
-	err = agent.RunTask(ctx, client, "openai/gpt-4o-mini", prompt, workDir)
+	registry := tools.DefaultRegistry("attractor-sandbox")
+	err = agent.RunTask(ctx, client, "openai/gpt-4o-mini", prompt, workDir, registry)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
 		os.Exit(1)

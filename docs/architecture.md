@@ -195,7 +195,7 @@ Registry
   .Register(RegisteredTool)
   .Get(name) -> (RegisteredTool, bool)
   .Definitions() -> []ToolDefinition
-  DefaultRegistry(dockerImage) -> *Registry   -- all 4 tools pre-loaded
+  DefaultRegistry(containerName) -> *Registry  -- all 4 tools pre-loaded
 ```
 
 ### Tool Implementations
@@ -205,22 +205,25 @@ Registry
 | `read_file` | `readfile.go` | Read file content with line numbers, optional offset/limit, binary detection |
 | `write_file` | `writefile.go` | Write content to file, auto-create parent directories |
 | `edit_file` | `editfile.go` | Replace exact string in file, with uniqueness check and optional replace_all |
-| `shell` | `shell.go` | Run command in Docker container (`attractor-sandbox`), with timeout and env filtering |
+| `shell` | `shell.go` | Run command in a named Docker container (per-run sandbox), with timeout and env filtering |
 
 ### Shell Security Model
 
-Shell commands run inside a Docker container, not on the host:
+Shell commands run inside a Docker container, not on the host. Each pipeline run gets its own container, named `attractor-<first 8 hex chars of run UUID>`:
 
 ```mermaid
 flowchart LR
-    Agent["Agent Loop"] --> ShellTool["shell tool"]
-    ShellTool --> EnsureContainer["EnsureContainer()"]
-    EnsureContainer --> Docker["Docker: attractor-sandbox"]
-    ShellTool --> DockerExec["docker exec -w workDir"]
-    DockerExec --> Docker
+    Runner["cmd/run-pipeline"] -->|"sandboxName(runID)"| Name["attractor-a1b2c3d4"]
+    Name --> EnsureContainer["EnsureContainer(image, name, workDir)"]
+    Name --> Registry["DefaultRegistry(name)"]
+    Registry --> Agent["Agent Loop"]
+    Agent --> ShellTool["shell tool"]
+    ShellTool --> DockerExec["docker exec name sh -c cmd"]
+    DockerExec --> Docker["Docker container"]
     Docker --> Output["stdout + stderr"]
     Output --> Truncate["TruncateToolOutput()"]
     Truncate --> Agent
+    Runner -->|"defer"| StopContainer["StopContainer(name)"]
 ```
 
 - The working directory is bind-mounted into the container.
@@ -246,6 +249,8 @@ This preserves the beginning (context) and end (usually the result) of long outp
 |---|---|---|
 | `RunTask()` | `error` | `cmd/test-agent` -- prints to stdout |
 | `RunTaskCapture()` | `(string, llm.Usage, int, []llm.Message, error)` | Pipeline codergen handler -- captures response text, accumulated token usage, round count, and full conversation history. Accepts `maxRoundsOverride` to set per-stage round limits. |
+
+Both functions accept a `*tools.Registry` from the caller instead of constructing one internally. This enables per-run sandbox identity: the registry is built once with a run-scoped container name and injected into the agent, keeping the agent layer free of global state.
 
 Both run the identical agent loop; `RunTaskCapture` was added for Layer 3 so the pipeline engine can capture LLM responses without stdout side effects. It returns the final text, the total `llm.Usage` accumulated across all LLM calls in the loop, the number of rounds executed, and the full conversation history (saved as `conversation.json` for post-mortem analysis).
 
@@ -457,6 +462,7 @@ classDiagram
         Model string
         ModelOverride string
         WorkDir string
+        Registry *tools.Registry
         Run(ctx, node, prompt, pctx) BackendResult error
     }
 
@@ -506,7 +512,7 @@ sequenceDiagram
     Codergen->>Codergen: Write prompt.md to logs
     Codergen->>Backend: Run(ctx, node, prompt, pctx)
     Backend->>Backend: Resolve model (node/override/default)
-    Backend->>AgentLoop: RunTaskCapture(client, model, prompt, workDir)
+    Backend->>AgentLoop: RunTaskCapture(ctx, client, model, prompt, workDir, maxRounds, registry)
     AgentLoop->>LLM: Complete (with tools)
     LLM-->>AgentLoop: Response (text or tool calls)
     Note over AgentLoop,LLM: Loop until text-only or round limit
@@ -756,7 +762,7 @@ flowchart TD
 
     ValidGraph --> RunConfig["RunConfig{\n  Graph,\n  LogsRoot,\n  Registry,\n  MaxIterations,\n  MaxBudgetTokens\n}"]
 
-    LLMClient["llm.NewClientFromEnv()"] --> AgentBackend["AgentBackend{\n  Client,\n  Model,\n  ModelOverride,\n  WorkDir\n}"]
+    LLMClient["llm.NewClientFromEnv()"] --> AgentBackend["AgentBackend{\n  Client,\n  Model,\n  ModelOverride,\n  WorkDir,\n  Registry\n}"]
     AgentBackend --> CodergenH["CodergenHandler{\n  Backend,\n  CheckRunner\n}"]
     CodergenH --> Registry["DefaultHandlerRegistry(\n  codergenHandler\n)"]
     Registry --> RunConfig
@@ -879,6 +885,7 @@ Several defense-in-depth measures have been added beyond the basic implementatio
 | Pipeline engine | Budget cap with 50%/75% threshold warnings | `pipeline/engine.go` |
 | Pipeline engine | Checkpoint warnings: save errors surfaced via `RunResult.Warnings` | `pipeline/engine.go` |
 | Pipeline engine | Cancellation-aware: context propagated through all layers; signal handling stops runs in bounded time | `pipeline/engine.go` |
+| Shell tool | Per-run sandbox identity: each run gets its own Docker container (`attractor-<runID[:8]>`); no shared global container name | `tools/shell.go`, `cmd/run-pipeline/main.go` |
 | Runner | Pre-flight checklist: validates workdir, API key, Docker, model IDs, budget | `cmd/run-pipeline/main.go` |
 | DOT parser | Recursion depth limit: max 50 nested subgraphs prevents stack overflow | `dot/parser.go` |
 

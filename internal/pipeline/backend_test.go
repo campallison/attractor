@@ -8,6 +8,7 @@ import (
 
 	"github.com/campallison/attractor/internal/dot"
 	"github.com/campallison/attractor/internal/llm"
+	"github.com/campallison/attractor/internal/tools"
 	"github.com/google/go-cmp/cmp"
 )
 
@@ -63,9 +64,10 @@ func TestAgentBackend_ModelOverride(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &modelCapturingClient{}
 			backend := AgentBackend{
-				Client:  client,
-				Model:   tt.backendModel,
-				WorkDir: t.TempDir(),
+				Client:   client,
+				Model:    tt.backendModel,
+				WorkDir:  t.TempDir(),
+				Registry: tools.DefaultRegistry("test-sandbox"),
 			}
 			node := &dot.Node{ID: "test_node", Attrs: tt.nodeAttrs}
 
@@ -88,9 +90,10 @@ func TestAgentBackend_ModelOverride(t *testing.T) {
 func TestAgentBackend_ReturnsUsage(t *testing.T) {
 	client := &modelCapturingClient{}
 	backend := AgentBackend{
-		Client:  client,
-		Model:   "test/model",
-		WorkDir: t.TempDir(),
+		Client:   client,
+		Model:    "test/model",
+		WorkDir:  t.TempDir(),
+		Registry: tools.DefaultRegistry("test-sandbox"),
 	}
 	node := &dot.Node{ID: "usage_node", Attrs: map[string]string{}}
 
@@ -143,9 +146,10 @@ func (c *infiniteToolClient) Complete(_ context.Context, _ llm.Request) (llm.Res
 func TestAgentBackend_MaxRoundsThreaded(t *testing.T) {
 	client := &infiniteToolClient{}
 	backend := AgentBackend{
-		Client:  client,
-		Model:   "test/model",
-		WorkDir: t.TempDir(),
+		Client:   client,
+		Model:    "test/model",
+		WorkDir:  t.TempDir(),
+		Registry: tools.DefaultRegistry("test-sandbox"),
 	}
 	node := &dot.Node{ID: "tight_stage", Attrs: map[string]string{
 		"max_rounds": "3",
