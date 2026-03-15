@@ -10,6 +10,7 @@ _scratch/
 *.so
 *.dylib
 /run-pipeline
+/check-consistency
 
 # Test binary, built with `go test -c`
 *.test
@@ -31,3 +32,4 @@ go.work.sum
 # Editor/IDE
  .idea/
  .vscode/
+.DS_Store

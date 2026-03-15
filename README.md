@@ -20,6 +20,7 @@ This project implements all three layers of the Attractor spec:
 attractor/
 ├── cmd/
 │   ├── run-pipeline/        # Reference pipeline runner (pre-flight, execution, reporting)
+│   ├── check-consistency/   # Static analysis tool for verifying generated code consistency
 │   ├── test-llm/            # Smoke test for the LLM client
 │   ├── test-agent/          # Smoke test for the agent loop
 │   └── test-pipeline/       # Smoke test for the pipeline runner
@@ -29,6 +30,7 @@ attractor/
 │   ├── agent/               # Layer 2: Agent loop, system prompt, conversation compression
 │   ├── dot/                 # Layer 3: DOT lexer, parser, and graph model
 │   ├── pipeline/            # Layer 3: Execution engine, handlers, context, checkpoint, validation
+│   ├── consistency/         # Static analysis checks for generated code (route-handler agreement, etc.)
 │   ├── store/               # Observability: PostgreSQL persistence for run/stage/event data
 │   └── logging/             # Structured logging setup (slog multi-handler)
 ├── pipelines/               # DOT pipeline definitions
@@ -119,7 +121,7 @@ Key concepts:
 - **Goal gates:** Nodes with `goal_gate=true` must succeed before the pipeline can exit
 - **Edge conditions:** Edges can have conditions like `condition="outcome=success"` to control routing
 - **Retry:** Nodes support `max_retries` with exponential backoff
-- **Build gates:** Nodes can specify `check_cmd="go build ./..."` to run a compilation check after each stage. If the check fails, the agent is re-invoked with the error output up to `check_max_retries` times (default 3)
+- **Build gates:** Nodes can specify `check_cmd="go build ./..."` to run a compilation check after each stage. If the check fails, the agent is re-invoked with the error output up to `check_max_retries` times (default 3). For richer validation, chain the `check-consistency` tool: `check_cmd="go build ./... && check-consistency --root=."`
 - **Per-stage round limits:** Nodes can specify `max_rounds=25` to cap how many agent rounds a stage may run, preventing runaway stages from burning tokens
 - **Usage tracking:** Each codergen stage writes a `usage.json` with token counts, and the pipeline aggregates totals in `RunResult`
 - **Budget cap:** Set `MaxBudgetTokens` on `RunConfig` to halt the pipeline if cumulative token usage exceeds a threshold

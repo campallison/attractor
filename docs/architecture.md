@@ -752,6 +752,74 @@ Each pipeline execution produces:
 
 ---
 
+## Consistency Checks (`internal/consistency`)
+
+### Purpose
+
+Static analysis tool that verifies internal agreement among components of a generated Go web application. Designed to run as a pipeline build gate via `check_cmd`, catching recombination failures that compilation alone cannot detect.
+
+The key insight: `go build` verifies that code compiles, but an application can compile while having routes that reference missing handlers, templates that post to non-existent endpoints, or store calls that don't match the interface. Consistency checks close this gap by cross-validating components against each other.
+
+### Checks
+
+| Check | Registry Key | What It Validates |
+|---|---|---|
+| Route-handler agreement | `routes` | Every registered `HandleFunc`/`Handle` route references a handler method that exists; warns about handler methods not registered to any route |
+
+### How It Works
+
+Checks use Go's `go/ast` package for precise source analysis. The tool parses all non-test `.go` files recursively (skipping `vendor/`, `node_modules/`, `testdata/`, dot-prefixed directories), then cross-references extracted information.
+
+For route-handler agreement:
+1. Finds all `HandleFunc`/`Handle` calls, extracts the route pattern and handler name
+2. Unwraps middleware wrappers (e.g., `h.requireSession(h.Board)` resolves to handler `Board`)
+3. Finds all exported functions/methods with `func(http.ResponseWriter, *http.Request)` signatures
+4. Cross-references: every route's handler must exist as a declared method; unregistered handlers produce warnings
+
+### Output Format
+
+```
+[CHECK:routes] PASS (10 routes, 10 handler methods)
+```
+
+Or on failure:
+
+```
+[CHECK:routes] FAIL (3 routes, 2 handler methods)
+  routes.go:10: route "DELETE /items/{id}" references handler "DeleteItem", but no such method exists
+```
+
+The `[CHECK:name]` prefix provides structured markers for future engine parsing (Tier 3). Error-severity findings cause a non-zero exit code; warnings do not.
+
+### Pipeline Integration
+
+Chain with compilation checks in a pipeline node's `check_cmd`:
+
+```
+check_cmd="go build ./... && check-consistency --root=."
+```
+
+### CLI
+
+```
+check-consistency --root=/workspace [--checks=routes]
+```
+
+| Flag | Purpose |
+|---|---|
+| `--root` | Root directory of the Go project to analyze (default `.`) |
+| `--checks` | Comma-separated list of checks to run (default: all registered checks) |
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `consistency/check.go` | Result, Finding, Severity types; CheckFunc registry; RunChecks orchestration |
+| `consistency/routes.go` | Route-handler agreement check; Go AST parsing utilities (parseGoFiles, extractRoutes, extractHandlers, isHandlerSignature) |
+| `cmd/check-consistency/main.go` | CLI entry point |
+
+---
+
 ## End-to-End Data Flow
 
 A complete pipeline execution from `.dot` source to final result:
