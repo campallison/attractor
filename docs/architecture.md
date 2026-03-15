@@ -837,7 +837,79 @@ check-consistency --root=/workspace [--checks=routes]
 | `consistency/tmplexist.go` | Template name existence check; `{{define}}` / `{{template}}` scanning, Go `Render`/`ExecuteTemplate` call extraction |
 | `consistency/store.go` | Store interface agreement check; interface extraction, struct field type mapping, field method call detection |
 | `cmd/check-consistency/main.go` | CLI entry point |
-| `internal/tools/provision.go` | `ProvisionCheckTool`: cross-compiles and copies the binary into the Docker sandbox |
+| `internal/tools/provision.go` | `ProvisionCheckTools`: cross-compiles and copies check binaries into the Docker sandbox |
+
+---
+
+## Behavioral Validation (`cmd/check-behavioral`)
+
+### Purpose
+
+While consistency checks (Tier 1) catch structural mismatches by reading source files, behavioral validation (Tier 2) catches runtime failures by actually starting the generated server and making HTTP requests against it. This catches nil pointer dereferences, bad SQL, template rendering panics, and other issues that only manifest when the code runs.
+
+### How It Works
+
+The `check-behavioral` binary runs inside the Docker sandbox as part of a stage's `check_cmd`. It:
+
+1. Reads `DATABASE_URL` from `/opt/attractor/env` (written by the runner)
+2. Auto-discovers the server entry point under `cmd/*/main.go`
+3. Builds and starts the server on a random port
+4. Polls for health (any HTTP response from `/` within the timeout)
+5. Extracts all registered routes from Go source (reuses `consistency.ListRoutes`)
+6. Sweeps every route with an HTTP request — any HTTP 500 is a failure
+7. Kills the server and reports results
+
+### Checks
+
+| Check | What it catches |
+|---|---|
+| `startup` | Server won't start: missing env vars, bad DB connection, init panics |
+| `sweep` | Routes that return HTTP 500: bad SQL, nil pointer dereferences, template rendering errors |
+
+### Infrastructure: Companion Database
+
+Behavioral validation requires a database. The pipeline runner provisions a per-run PostgreSQL container when launched with `--companion-db`:
+
+```
+go run ./cmd/run-pipeline/ -pipeline my.dot -workdir /path --companion-db
+```
+
+The runner creates a Docker network (`<sandbox>-net`), starts `postgres:17` on it (`<sandbox>-db`), connects the sandbox container, and writes `DATABASE_URL` to `/opt/attractor/env`. Everything is torn down when the pipeline completes.
+
+### Pipeline Integration
+
+Chain after compilation and consistency checks in later pipeline stages:
+
+```
+check_cmd="go build ./... && check-consistency && check-behavioral"
+```
+
+### CLI
+
+```
+check-behavioral [--root=.] [--timeout=15s] [--env-file=/opt/attractor/env]
+```
+
+| Flag | Purpose |
+|---|---|
+| `--root` | Root directory of the Go project (default `.`) |
+| `--timeout` | How long to wait for server startup (default `15s`) |
+| `--env-file` | Path to env file with DATABASE_URL (default `/opt/attractor/env`) |
+
+### Output Format
+
+```
+[CHECK:startup] PASS
+[CHECK:sweep] PASS (10 routes, 0 returned 500)
+```
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `cmd/check-behavioral/main.go` | CLI entry point: server lifecycle, health probe, route sweep |
+| `internal/tools/companion.go` | `SetupCompanionDB` / `TeardownCompanionDB`: Docker network and PostgreSQL container lifecycle |
+| `internal/tools/provision.go` | `ProvisionCheckTools`: cross-compiles and copies both check binaries into the sandbox |
 
 ---
 

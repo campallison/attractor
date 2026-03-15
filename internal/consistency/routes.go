@@ -96,6 +96,17 @@ func CheckRouteHandler(root string) Result {
 	}
 }
 
+// ListRoutes returns all registered HTTP routes found in the Go source tree
+// rooted at dir. It is a convenience wrapper for use by tools that need the
+// route list without running the full route-handler consistency check.
+func ListRoutes(root string) ([]Route, error) {
+	files, fset, err := parseGoFiles(root)
+	if err != nil {
+		return nil, err
+	}
+	return extractRoutes(fset, files, root), nil
+}
+
 // parseGoFiles walks root recursively, parsing all non-test Go source files.
 // Directories named vendor, node_modules, testdata, or starting with "." are skipped.
 func parseGoFiles(root string) ([]*ast.File, *token.FileSet, error) {

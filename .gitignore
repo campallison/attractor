@@ -11,6 +11,7 @@ _scratch/
 *.dylib
 /run-pipeline
 /check-consistency
+/check-behavioral
 
 # Test binary, built with `go test -c`
 *.test

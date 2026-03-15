@@ -49,6 +49,7 @@ func main() {
 	promptCache := flag.Bool("prompt-cache", false, "enable prompt caching for Anthropic models (reduces input token cost)")
 	dockerImage := flag.String("docker-image", defaultDockerImage, "Docker image for shell sandbox")
 	noDocker := flag.Bool("no-docker", false, "skip Docker container setup (shell commands will fail)")
+	companionDB := flag.Bool("companion-db", false, "start a companion PostgreSQL container for behavioral validation")
 	simulate := flag.Bool("simulate", false, "use SimulatedBackend instead of real LLM (no API key or Docker needed)")
 	flag.Parse()
 
@@ -214,11 +215,36 @@ func main() {
 
 			attractorRoot, err := os.Getwd()
 			if err != nil {
-				fmt.Printf("    Check tool: not provisioned (cannot determine working directory: %v)\n", err)
-			} else if err := tools.ProvisionCheckTool(ctx, attractorRoot, containerName); err != nil {
-				fmt.Printf("    Check tool: not provisioned (%v)\n", err)
+				fmt.Printf("    Check tools: not provisioned (cannot determine working directory: %v)\n", err)
 			} else {
-				fmt.Println("    Check tool: check-consistency provisioned")
+				results := tools.ProvisionCheckTools(ctx, attractorRoot, containerName)
+				for name, err := range results {
+					if err != nil {
+						fmt.Printf("    Check tools: %s not provisioned (%v)\n", name, err)
+					} else {
+						fmt.Printf("    Check tools: %s provisioned\n", name)
+					}
+				}
+			}
+
+			if *companionDB {
+				networkName := containerName + "-net"
+				dbContainerName := containerName + "-db"
+				fmt.Printf("    Companion DB: starting %s...\n", dbContainerName)
+				if err := tools.SetupCompanionDB(ctx, networkName, dbContainerName, containerName); err != nil {
+					// Clean up partial companion DB resources before exiting.
+					// Cannot use log.Fatalf here — it skips defers (leaking the sandbox).
+					_ = tools.TeardownCompanionDB(ctx, networkName, dbContainerName, containerName)
+					_ = tools.StopContainer(containerName)
+					log.Fatalf("Failed to set up companion database: %v", err)
+				}
+				defer func() {
+					fmt.Printf("Stopping companion DB %s...\n", dbContainerName)
+					if err := tools.TeardownCompanionDB(ctx, networkName, dbContainerName, containerName); err != nil {
+						fmt.Printf("Warning: failed to tear down companion DB: %v\n", err)
+					}
+				}()
+				fmt.Printf("    Companion DB: ready (DATABASE_URL written to sandbox)\n")
 			}
 		}
 

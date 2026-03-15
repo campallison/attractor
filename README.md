@@ -21,6 +21,7 @@ attractor/
 ├── cmd/
 │   ├── run-pipeline/        # Reference pipeline runner (pre-flight, execution, reporting)
 │   ├── check-consistency/   # Static analysis tool for verifying generated code consistency
+│   ├── check-behavioral/    # Behavioral validation tool (starts server, sweeps routes)
 │   ├── test-llm/            # Smoke test for the LLM client
 │   ├── test-agent/          # Smoke test for the agent loop
 │   └── test-pipeline/       # Smoke test for the pipeline runner
@@ -121,7 +122,7 @@ Key concepts:
 - **Goal gates:** Nodes with `goal_gate=true` must succeed before the pipeline can exit
 - **Edge conditions:** Edges can have conditions like `condition="outcome=success"` to control routing
 - **Retry:** Nodes support `max_retries` with exponential backoff
-- **Build gates:** Nodes can specify `check_cmd="go build ./..."` to run a compilation check after each stage. If the check fails, the agent is re-invoked with the error output up to `check_max_retries` times (default 3). For richer validation, chain the `check-consistency` tool: `check_cmd="go build ./... && check-consistency --root=."`
+- **Build gates:** Nodes can specify `check_cmd="go build ./..."` to run a compilation check after each stage. If the check fails, the agent is re-invoked with the error output up to `check_max_retries` times (default 3). For richer validation, chain `check-consistency` (static analysis) and `check-behavioral` (server startup + route sweep): `check_cmd="go build ./... && check-consistency && check-behavioral"`
 - **Per-stage round limits:** Nodes can specify `max_rounds=25` to cap how many agent rounds a stage may run, preventing runaway stages from burning tokens
 - **Usage tracking:** Each codergen stage writes a `usage.json` with token counts, and the pipeline aggregates totals in `RunResult`
 - **Budget cap:** Set `MaxBudgetTokens` on `RunConfig` to halt the pipeline if cumulative token usage exceeds a threshold
@@ -142,9 +143,12 @@ go run ./cmd/run-pipeline/ -pipeline pipelines/my-pipeline.dot --model-override 
 
 # Production run with prompt caching enabled (reduces cost for Anthropic models)
 go run ./cmd/run-pipeline/ -pipeline pipelines/my-pipeline.dot --prompt-cache
+
+# Run with companion database for behavioral validation (starts per-run PostgreSQL)
+go run ./cmd/run-pipeline/ -pipeline pipelines/my-pipeline.dot -workdir /path/to/workdir --companion-db
 ```
 
-The runner performs a pre-flight checklist (workdir, API key, Docker, model validation against OpenRouter's API, budget sanity) before execution begins. When Docker is enabled, it also cross-compiles and provisions the `check-consistency` binary into the sandbox container so pipeline stages can reference it in `check_cmd`.
+The runner performs a pre-flight checklist (workdir, API key, Docker, model validation against OpenRouter's API, budget sanity) before execution begins. When Docker is enabled, it cross-compiles and provisions the `check-consistency` and `check-behavioral` binaries into the sandbox container. The `--companion-db` flag starts a per-run PostgreSQL container on a shared Docker network, enabling behavioral validation stages to start the generated server and test its endpoints.
 
 ## Design Decisions
 
