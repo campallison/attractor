@@ -88,8 +88,10 @@ type CheckFunc func(root string) Result
 
 // Registry maps check names to their implementations.
 var Registry = map[string]CheckFunc{
-	"routes":    CheckRouteHandler,
-	"templates": CheckTemplateRoutes,
+	"routes":     CheckRouteHandler,
+	"templates":  CheckTemplateRoutes,
+	"tmpl-names": CheckTemplateExistence,
+	"store":      CheckStoreInterface,
 }
 
 // RunChecks runs the named checks (or all registered checks if names is empty).

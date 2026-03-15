@@ -766,6 +766,8 @@ The key insight: `go build` verifies that code compiles, but an application can 
 |---|---|---|
 | Route-handler agreement | `routes` | Every registered `HandleFunc`/`Handle` route references a handler method that exists; warns about handler methods not registered to any route |
 | Template-route agreement | `templates` | Every `hx-post`, `hx-get`, `hx-put`, `hx-delete`, `hx-patch`, and form `action=` URL in HTML templates matches a registered route (method and path) |
+| Template name existence | `tmpl-names` | Every template name referenced in Go code (`Render`, `ExecuteTemplate`) and in HTML (`{{template "name"}}`) has a corresponding `{{define "name"}}` block; warns about unreferenced definitions |
+| Store interface agreement | `store` | Every method called on a struct field whose type matches an interface exists in that interface; warns about declared but never-called interface methods |
 
 ### How It Works
 
@@ -824,6 +826,8 @@ check-consistency --root=/workspace [--checks=routes]
 | `consistency/check.go` | Result, Finding, Severity types; CheckFunc registry; RunChecks orchestration |
 | `consistency/routes.go` | Route-handler agreement check; Go AST parsing utilities (parseGoFiles, extractRoutes, extractHandlers, isHandlerSignature) |
 | `consistency/templates.go` | Template-route agreement check; HTML scanning, URL normalization, cross-referencing |
+| `consistency/tmplexist.go` | Template name existence check; `{{define}}` / `{{template}}` scanning, Go `Render`/`ExecuteTemplate` call extraction |
+| `consistency/store.go` | Store interface agreement check; interface extraction, struct field type mapping, field method call detection |
 | `cmd/check-consistency/main.go` | CLI entry point |
 
 ---
