@@ -211,6 +211,15 @@ func main() {
 				}
 			}()
 			fmt.Printf("    Docker: container %s running\n", containerName)
+
+			attractorRoot, err := os.Getwd()
+			if err != nil {
+				fmt.Printf("    Check tool: not provisioned (cannot determine working directory: %v)\n", err)
+			} else if err := tools.ProvisionCheckTool(ctx, attractorRoot, containerName); err != nil {
+				fmt.Printf("    Check tool: not provisioned (%v)\n", err)
+			} else {
+				fmt.Println("    Check tool: check-consistency provisioned")
+			}
 		}
 
 		toolRegistry := tools.DefaultRegistry(containerName)

@@ -808,6 +808,14 @@ Chain with compilation checks in a pipeline node's `check_cmd`:
 check_cmd="go build ./... && check-consistency --root=."
 ```
 
+For stages where only some checks are relevant (e.g., before templates exist):
+
+```
+check_cmd="go test ./... && check-consistency --checks=routes,store"
+```
+
+The pipeline runner automatically provisions the `check-consistency` binary into the Docker sandbox at startup via `tools.ProvisionCheckTool`. It cross-compiles for Linux, copies the binary into the container at `/usr/local/bin/check-consistency`, and logs the result. If provisioning fails (e.g., source not available), the runner warns but does not abort — stages that reference `check-consistency` in their `check_cmd` will fail at the build gate with a clear "command not found" error.
+
 ### CLI
 
 ```
@@ -829,6 +837,7 @@ check-consistency --root=/workspace [--checks=routes]
 | `consistency/tmplexist.go` | Template name existence check; `{{define}}` / `{{template}}` scanning, Go `Render`/`ExecuteTemplate` call extraction |
 | `consistency/store.go` | Store interface agreement check; interface extraction, struct field type mapping, field method call detection |
 | `cmd/check-consistency/main.go` | CLI entry point |
+| `internal/tools/provision.go` | `ProvisionCheckTool`: cross-compiles and copies the binary into the Docker sandbox |
 
 ---
 

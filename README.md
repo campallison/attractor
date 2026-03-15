@@ -144,7 +144,7 @@ go run ./cmd/run-pipeline/ -pipeline pipelines/my-pipeline.dot --model-override 
 go run ./cmd/run-pipeline/ -pipeline pipelines/my-pipeline.dot --prompt-cache
 ```
 
-The runner performs a pre-flight checklist (workdir, API key, Docker, model validation against OpenRouter's API, budget sanity) before execution begins.
+The runner performs a pre-flight checklist (workdir, API key, Docker, model validation against OpenRouter's API, budget sanity) before execution begins. When Docker is enabled, it also cross-compiles and provisions the `check-consistency` binary into the sandbox container so pipeline stages can reference it in `check_cmd`.
 
 ## Design Decisions
 
