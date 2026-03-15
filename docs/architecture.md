@@ -765,6 +765,7 @@ The key insight: `go build` verifies that code compiles, but an application can 
 | Check | Registry Key | What It Validates |
 |---|---|---|
 | Route-handler agreement | `routes` | Every registered `HandleFunc`/`Handle` route references a handler method that exists; warns about handler methods not registered to any route |
+| Template-route agreement | `templates` | Every `hx-post`, `hx-get`, `hx-put`, `hx-delete`, `hx-patch`, and form `action=` URL in HTML templates matches a registered route (method and path) |
 
 ### How It Works
 
@@ -775,6 +776,12 @@ For route-handler agreement:
 2. Unwraps middleware wrappers (e.g., `h.requireSession(h.Board)` resolves to handler `Board`)
 3. Finds all exported functions/methods with `func(http.ResponseWriter, *http.Request)` signatures
 4. Cross-references: every route's handler must exist as a declared method; unregistered handlers produce warnings
+
+For template-route agreement:
+1. Scans `.html`, `.tmpl`, and `.gohtml` files for `hx-*` attributes and form `action=` attributes
+2. Normalizes template URLs by replacing Go template expressions (`{{.TeamID}}`) with wildcards
+3. Normalizes route patterns by replacing path parameters (`{teamId}`) with the same wildcards
+4. Cross-references: every template URL must match a registered route (method-aware for `hx-*`, method-flexible for `action=` without an explicit `method=`)
 
 ### Output Format
 
@@ -816,6 +823,7 @@ check-consistency --root=/workspace [--checks=routes]
 |---|---|
 | `consistency/check.go` | Result, Finding, Severity types; CheckFunc registry; RunChecks orchestration |
 | `consistency/routes.go` | Route-handler agreement check; Go AST parsing utilities (parseGoFiles, extractRoutes, extractHandlers, isHandlerSignature) |
+| `consistency/templates.go` | Template-route agreement check; HTML scanning, URL normalization, cross-referencing |
 | `cmd/check-consistency/main.go` | CLI entry point |
 
 ---
