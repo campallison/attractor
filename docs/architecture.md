@@ -549,10 +549,13 @@ sequenceDiagram
 When a node has `check_cmd` set (e.g., `check_cmd="go build ./..."`), the codergen handler runs this command after the agent completes. If the check fails:
 
 1. The error output is saved as `buildgate_attempt_N.txt`
-2. The agent is re-invoked with the original prompt + "--- BUILD GATE FAILURE ---" + the error output + a hint to check `_scratch/` for working notes from the previous attempt
-3. This repeats up to `check_max_retries` times (default 3)
-4. Token usage is accumulated across all retry invocations
-5. If all retries are exhausted, the stage fails
+2. The output is parsed for `[CHECK:name] PASS/FAIL` markers. When markers are found, the retry prompt is structured: a summary table shows which checks passed and which failed, followed by detailed output only for failing checks. When no markers are found (e.g., bare compiler errors), the full output is included as-is.
+3. The agent is re-invoked with this structured (or raw) prompt, plus a hint to check `_scratch/` for working notes
+4. This repeats up to `check_max_retries` times (default 3)
+5. Token usage is accumulated across all retry invocations
+6. If all retries are exhausted, the stage fails
+
+The structured retry prompt reduces noise by filtering out passing check output. An agent seeing 10 passing checks and 1 failing check receives a focused prompt showing only the failure details, rather than pages of irrelevant PASS output. The `[CHECK:name]` marker format is produced by both `check-consistency` and `check-behavioral`.
 
 Build gates enable **contract-first design**: the design stage produces Go interface files, downstream stages implement against them, and the compiler enforces consistency via `go build ./...` checks.
 
@@ -750,6 +753,7 @@ Each pipeline execution produces:
 | `pipeline/condition.go` | Condition expression evaluator |
 | `pipeline/handler.go` | Handler interface, HandlerRegistry, shape mapping |
 | `pipeline/handlers.go` | Start, Exit, Conditional, Codergen handlers (with build gate and scratch lifecycle), CheckRunner, BackendResult, backends |
+| `pipeline/checkparse.go` | Build gate check output parsing: `[CHECK:name] PASS/FAIL` marker extraction and structured retry prompt construction |
 | `pipeline/scratch.go` | Scratch directory lifecycle: SetupScratch, ArchiveAndCleanScratch, copyDir |
 | `pipeline/snapshot.go` | Filesystem observation: SnapshotDir, DiffSnapshots, FileDiff |
 | `pipeline/engine.go` | Core loop, edge selection, goal gates, retry, backoff, usage aggregation, failure halting, stage recording |

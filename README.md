@@ -122,7 +122,7 @@ Key concepts:
 - **Goal gates:** Nodes with `goal_gate=true` must succeed before the pipeline can exit
 - **Edge conditions:** Edges can have conditions like `condition="outcome=success"` to control routing
 - **Retry:** Nodes support `max_retries` with exponential backoff
-- **Build gates:** Nodes can specify `check_cmd="go build ./..."` to run a compilation check after each stage. If the check fails, the agent is re-invoked with the error output up to `check_max_retries` times (default 3). For richer validation, chain `check-consistency` (static analysis) and `check-behavioral` (server startup + route sweep with response body capture and server log diagnostics): `check_cmd="go build ./... && check-consistency && check-behavioral"`
+- **Build gates:** Nodes can specify `check_cmd="go build ./..."` to run a compilation check after each stage. If the check fails, the engine parses `[CHECK:name] PASS/FAIL` markers from the output and builds a structured retry prompt showing only failing checks' details. The agent is re-invoked up to `check_max_retries` times (default 3). For richer validation, chain `check-consistency` (static analysis) and `check-behavioral` (server startup + route sweep with response body capture and server log diagnostics): `check_cmd="go build ./... && check-consistency && check-behavioral"`
 - **Per-stage round limits:** Nodes can specify `max_rounds=25` to cap how many agent rounds a stage may run, preventing runaway stages from burning tokens
 - **Usage tracking:** Each codergen stage writes a `usage.json` with token counts, and the pipeline aggregates totals in `RunResult`
 - **Budget cap:** Set `MaxBudgetTokens` on `RunConfig` to halt the pipeline if cumulative token usage exceeds a threshold
