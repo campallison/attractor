@@ -149,20 +149,66 @@ func buildORRequest(req Request, zdr, promptCaching bool) (orRequest, error) {
 	return orReq, nil
 }
 
+// maxCacheBreakpoints is the Anthropic API limit on cache_control blocks.
+const maxCacheBreakpoints = 4
+
 // translateMessages converts unified Messages to OpenRouter wire messages.
-// When promptCaching is true and the model is an Anthropic model, system and
-// user messages use the content-array format with cache_control breakpoints.
+// When promptCaching is true and the model is an Anthropic model, up to
+// maxCacheBreakpoints messages get cache_control breakpoints, placed at the
+// system message, first user message, and the last user messages.
 func translateMessages(msgs []Message, promptCaching bool, model string) ([]orMessage, error) {
 	cache := promptCaching && strings.HasPrefix(model, "anthropic/")
+
+	cacheSet := map[int]bool{}
+	if cache {
+		cacheSet = selectCacheBreakpoints(msgs)
+	}
+
 	out := make([]orMessage, 0, len(msgs))
-	for _, m := range msgs {
-		wire, err := translateMessage(m, cache)
+	for i, m := range msgs {
+		wire, err := translateMessage(m, cacheSet[i])
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, wire...)
 	}
 	return out, nil
+}
+
+// selectCacheBreakpoints chooses which message indices should receive
+// cache_control markers, respecting the maxCacheBreakpoints limit.
+// Strategy: system message (stable across all rounds) + first user message
+// (original prompt, stable) + last user messages (growing conversation prefix).
+func selectCacheBreakpoints(msgs []Message) map[int]bool {
+	marks := map[int]bool{}
+
+	for i, m := range msgs {
+		if m.Role == RoleSystem {
+			marks[i] = true
+			break
+		}
+	}
+
+	var userIndices []int
+	for i, m := range msgs {
+		if m.Role == RoleUser {
+			userIndices = append(userIndices, i)
+		}
+	}
+
+	if len(userIndices) > 0 {
+		marks[userIndices[0]] = true
+	}
+
+	remaining := maxCacheBreakpoints - len(marks)
+	for i := len(userIndices) - 1; i >= 0 && remaining > 0; i-- {
+		if !marks[userIndices[i]] {
+			marks[userIndices[i]] = true
+			remaining--
+		}
+	}
+
+	return marks
 }
 
 // translateMessage converts a single unified Message to one or more wire messages.

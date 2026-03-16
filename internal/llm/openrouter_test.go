@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -239,6 +240,111 @@ func TestTranslateMessages_CachingDisabled(t *testing.T) {
 		if _, ok := got[i].Content.(string); !ok {
 			t.Errorf("%s message: expected plain string content when caching disabled, got %T", label, got[i].Content)
 		}
+	}
+}
+
+func TestTranslateMessages_CacheBreakpointLimit(t *testing.T) {
+	// Build a conversation with many user messages (simulating a long agent run).
+	msgs := []Message{
+		SystemMessage("system prompt"),
+		UserMessage("initial prompt"),
+	}
+	for i := 0; i < 10; i++ {
+		msgs = append(msgs, AssistantMessage("thinking..."))
+		msgs = append(msgs, UserMessage(fmt.Sprintf("tool result %d", i)))
+	}
+
+	got, err := translateMessages(msgs, true, "anthropic/claude-opus-4.6")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var cacheCount int
+	for _, m := range got {
+		if parts, ok := m.Content.([]orContentPart); ok {
+			for _, p := range parts {
+				if p.CacheControl != nil {
+					cacheCount++
+				}
+			}
+		}
+	}
+
+	if cacheCount > maxCacheBreakpoints {
+		t.Errorf("cache_control blocks = %d, want <= %d", cacheCount, maxCacheBreakpoints)
+	}
+	if cacheCount == 0 {
+		t.Error("expected at least 1 cache_control block")
+	}
+
+	// System message should always be cached.
+	if parts, ok := got[0].Content.([]orContentPart); !ok || parts[0].CacheControl == nil {
+		t.Error("system message should have cache_control")
+	}
+
+	// First user message (index 1) should be cached.
+	if parts, ok := got[1].Content.([]orContentPart); !ok || parts[0].CacheControl == nil {
+		t.Error("first user message should have cache_control")
+	}
+
+	// Last user message should be cached.
+	lastUserIdx := len(got) - 1
+	for i := len(got) - 1; i >= 0; i-- {
+		if got[i].Role == "user" {
+			lastUserIdx = i
+			break
+		}
+	}
+	if parts, ok := got[lastUserIdx].Content.([]orContentPart); !ok || parts[0].CacheControl == nil {
+		t.Error("last user message should have cache_control")
+	}
+}
+
+func TestSelectCacheBreakpoints(t *testing.T) {
+	tests := []struct {
+		name      string
+		msgs      []Message
+		wantCount int
+	}{
+		{
+			name:      "system + 1 user = 2 marks",
+			msgs:      []Message{SystemMessage("sys"), UserMessage("prompt")},
+			wantCount: 2,
+		},
+		{
+			name: "system + 5 users = 4 marks (capped)",
+			msgs: []Message{
+				SystemMessage("sys"),
+				UserMessage("u1"), AssistantMessage("a1"),
+				UserMessage("u2"), AssistantMessage("a2"),
+				UserMessage("u3"), AssistantMessage("a3"),
+				UserMessage("u4"), AssistantMessage("a4"),
+				UserMessage("u5"),
+			},
+			wantCount: 4,
+		},
+		{
+			name:      "no system = user messages only",
+			msgs:      []Message{UserMessage("u1"), UserMessage("u2"), UserMessage("u3"), UserMessage("u4"), UserMessage("u5")},
+			wantCount: 4,
+		},
+		{
+			name:      "empty messages",
+			msgs:      []Message{},
+			wantCount: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := selectCacheBreakpoints(tc.msgs)
+			if len(got) != tc.wantCount {
+				t.Errorf("selectCacheBreakpoints: got %d marks, want %d", len(got), tc.wantCount)
+			}
+			if len(got) > maxCacheBreakpoints {
+				t.Errorf("exceeded max: got %d marks, limit is %d", len(got), maxCacheBreakpoints)
+			}
+		})
 	}
 }
 
