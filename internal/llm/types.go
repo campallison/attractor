@@ -136,12 +136,13 @@ type ToolChoice struct {
 
 // Request is the single input type for Client.Complete().
 type Request struct {
-	Model       string
-	Messages    []Message
-	Tools       []ToolDefinition
-	ToolChoice  *ToolChoice
-	MaxTokens   int
-	Temperature *float64
+	Model              string
+	Messages           []Message
+	Tools              []ToolDefinition
+	ToolChoice         *ToolChoice
+	MaxTokens          int
+	ReasoningMaxTokens int // cap on thinking tokens (subset of MaxTokens); 0 = provider default
+	Temperature        *float64
 }
 
 // FinishReason records why the model stopped generating.

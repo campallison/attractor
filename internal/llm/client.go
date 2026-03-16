@@ -81,7 +81,7 @@ func NewClient(apiKey string, opts ...ClientOption) (*Client, error) {
 		apiKey:  apiKey,
 		baseURL: openRouterBaseURL,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: 360 * time.Second,
 		},
 	}
 

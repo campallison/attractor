@@ -64,19 +64,28 @@ type orFunction struct {
 
 // orProviderPreferences controls provider routing behaviour on OpenRouter.
 type orProviderPreferences struct {
-	ZDR            bool   `json:"zdr,omitempty"`
-	DataCollection string `json:"data_collection,omitempty"` // "allow" or "deny"
+	ZDR            bool     `json:"zdr,omitempty"`
+	DataCollection string   `json:"data_collection,omitempty"` // "allow" or "deny"
+	Order          []string `json:"order,omitempty"`
+	Ignore         []string `json:"ignore,omitempty"`
+}
+
+// orReasoning controls thinking/reasoning token allocation on OpenRouter.
+// For Anthropic models this maps to thinking.budget_tokens.
+type orReasoning struct {
+	MaxTokens int `json:"max_tokens,omitempty"`
 }
 
 // orRequest is the full request body sent to the OpenRouter chat completions endpoint.
 type orRequest struct {
-	Model      string                 `json:"model"`
-	Messages   []orMessage            `json:"messages"`
-	Tools      []orTool               `json:"tools,omitempty"`
-	ToolChoice interface{}            `json:"tool_choice,omitempty"` // string or object
-	MaxTokens  int                    `json:"max_tokens,omitempty"`
-	Temperature *float64              `json:"temperature,omitempty"`
-	Provider   *orProviderPreferences `json:"provider,omitempty"`
+	Model       string                 `json:"model"`
+	Messages    []orMessage            `json:"messages"`
+	Tools       []orTool               `json:"tools,omitempty"`
+	ToolChoice  interface{}            `json:"tool_choice,omitempty"` // string or object
+	MaxTokens   int                    `json:"max_tokens,omitempty"`
+	Temperature *float64               `json:"temperature,omitempty"`
+	Provider    *orProviderPreferences `json:"provider,omitempty"`
+	Reasoning   *orReasoning           `json:"reasoning,omitempty"`
 }
 
 // orResponse is the response body from the OpenRouter chat completions endpoint.
@@ -123,9 +132,19 @@ func buildORRequest(req Request, zdr, promptCaching bool) (orRequest, error) {
 		orReq.ToolChoice = translateToolChoice(req.ToolChoice)
 	}
 
-	if zdr {
-		orReq.Provider = &orProviderPreferences{ZDR: true, DataCollection: "deny"}
+	if req.ReasoningMaxTokens > 0 {
+		orReq.Reasoning = &orReasoning{MaxTokens: req.ReasoningMaxTokens}
 	}
+
+	// Prefer Anthropic's direct API; Bedrock drops connections on large outputs.
+	prov := &orProviderPreferences{
+		Order: []string{"anthropic"},
+	}
+	if zdr {
+		prov.ZDR = true
+		prov.DataCollection = "deny"
+	}
+	orReq.Provider = prov
 
 	return orReq, nil
 }
@@ -268,6 +287,20 @@ func parseORResponse(body []byte, requestedModel string) (Response, error) {
 	}
 
 	choice := raw.Choices[0]
+
+	// Diagnostic: log when finish reason is unexpected. "length" means
+	// MaxTokens was reached — log at Debug since it's a normal budget event.
+	switch choice.FinishReason {
+	case "stop", "tool_calls":
+		// normal
+	case "length":
+		slog.Debug("llm.response.truncated", "finish_reason", "length")
+	default:
+		slog.Warn("llm.response.diagnostic",
+			"finish_reason", choice.FinishReason,
+			"body", string(body),
+		)
+	}
 	msg, err := parseORMessage(choice.Message)
 	if err != nil {
 		return Response{}, fmt.Errorf("failed to parse response message: %w", err)
@@ -358,6 +391,15 @@ func doRequest(ctx context.Context, httpClient *http.Client, baseURL, apiKey str
 	payload, err := json.Marshal(orReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Diagnostic: log whether max_tokens and reasoning are present in the request
+	if orReq.MaxTokens > 0 || orReq.Reasoning != nil {
+		var reasoningBudget int
+		if orReq.Reasoning != nil {
+			reasoningBudget = orReq.Reasoning.MaxTokens
+		}
+		slog.Debug("llm.request.tokens", "max_tokens", orReq.MaxTokens, "reasoning_max_tokens", reasoningBudget)
 	}
 
 	url := baseURL + "/chat/completions"

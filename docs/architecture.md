@@ -95,7 +95,7 @@ Provides a provider-agnostic interface for making LLM chat completion requests. 
 Client              -- entry point; holds API key, base URL, HTTP client
   .Complete(ctx, Request) -> (Response, error)
 
-Request             -- model, messages, tools, tool choice, temperature
+Request             -- model, messages, tools, tool choice, max tokens, reasoning budget, temperature
 Response            -- ID, model, message, finish reason, usage
 
 Message             -- role + []ContentPart + optional ToolCallID
@@ -146,6 +146,9 @@ ProviderError         -- base type for HTTP errors
 - **`NewClientFromEnv()`** loads `.env` automatically so local development works without shell exports.
 - **Zero Data Retention (ZDR):** `WithZDR()` option adds OpenRouter's `provider.zdr: true` preference, routing requests only to providers that enforce zero data retention.
 - **Prompt Caching:** `WithPromptCaching()` enables Anthropic's `cache_control` mechanism for system and user messages. Cached prefixes are billed at ~10% of normal input cost. The `Usage` struct tracks `CacheReadTokens` and `CacheCreationTokens`.
+- **Provider routing:** The OpenRouter adapter enforces `order: ["anthropic"]` provider preference, routing requests to Anthropic's direct API. This avoids Amazon Bedrock, which drops connections on large extended-thinking outputs.
+- **Reasoning token control:** The `ReasoningMaxTokens` field on `Request` caps thinking tokens as a subset of `MaxTokens`, preventing adaptive thinking from consuming the entire output budget. Mapped to OpenRouter's `reasoning.max_tokens` parameter.
+- **Extended HTTP timeout:** The HTTP client timeout is set to 360 seconds to accommodate large outputs with extended thinking (e.g., a 700-line spec generated in a single tool call).
 - **Wire format translation** is isolated in `openrouter.go` (unexported). Application code only sees the unified types in `types.go`. Adding a new provider means adding a new translation layer without changing any interfaces.
 
 ### Files
@@ -255,6 +258,8 @@ Both functions accept a `*tools.Registry` from the caller instead of constructin
 Both run the identical agent loop; `RunTaskCapture` was added for Layer 3 so the pipeline engine can capture LLM responses without stdout side effects. It returns the final text, the total `llm.Usage` accumulated across all LLM calls in the loop, the number of rounds executed, and the full conversation history (saved as `conversation.json` for post-mortem analysis).
 
 **Agent exhaustion:** When the agent hits the round limit without producing a text-only response, `RunTaskCapture` returns `agent.ErrRoundLimitReached`. This sentinel error causes the pipeline's codergen handler to report `StatusFail`, preventing silent failures from being treated as success. The round limit defaults to 50 but can be overridden per-stage via the `max_rounds` DOT attribute, allowing simpler stages to fail fast while complex stages get more room.
+
+**LLM token budgets:** Each LLM call uses `defaultMaxTokens` (32,768) as the total output budget and `defaultReasoningMaxTokens` (12,288) to cap thinking tokens. The remainder (20,480 tokens) is available for the model's visible response — tool call arguments, file contents, etc. These defaults prevent adaptive thinking from consuming the entire budget on complex tasks.
 
 **Conversation compression:** The agent loop compresses conversation history as it grows. After a configurable number of recent rounds (default 4), older tool results are summarized. Compression uses several strategies: `write_file`/`edit_file` results are compressed immediately regardless of age ("write-and-forget"), large `read_file` results get skeleton summaries (first/last few lines), short `shell` outputs are preserved verbatim, and other tool results get one-line path-based summaries.
 
@@ -556,7 +561,7 @@ The agent loop tracks consecutive read-only rounds (rounds where all tool calls 
 1. A `agent.read_loop_detected` warning is logged
 2. A course-correction message is injected into the conversation as a `user` role message with a `[PIPELINE ENGINE]` prefix, reminding the agent to maintain `_scratch/` notes and begin writing deliverables
 3. The consecutive-round counter resets, giving the agent a chance to course-correct
-4. At most 1 nudge is issued per stage; if the read-loop persists after the nudge and the threshold is reached again, the agent is terminated early with `ErrReadLoopDetected`
+4. At most 2 nudges are issued per stage. After each nudge, the consecutive-round counter resets and the agent gets another chance. If the pattern persists after all nudges are exhausted and the threshold is reached again, the agent is terminated early with `ErrReadLoopDetected`. The nudge count resets when the agent performs a write operation, since a write proves the agent isn't stuck and subsequent read phases are legitimate.
 
 The nudge does not count as a round toward the round limit. The `[PIPELINE ENGINE]` prefix distinguishes engine-injected messages from the original user prompt.
 
@@ -1052,6 +1057,7 @@ Several defense-in-depth measures have been added beyond the basic implementatio
 | Pipeline engine | Cancellation-aware: context propagated through all layers; signal handling stops runs in bounded time | `pipeline/engine.go` |
 | Shell tool | Per-run sandbox identity: each run gets its own Docker container (`attractor-<runID[:8]>`); no shared global container name | `tools/shell.go`, `cmd/run-pipeline/main.go` |
 | Runner | Pre-flight checklist: validates workdir, API key, Docker, model IDs, budget | `cmd/run-pipeline/main.go` |
+| Runner | Container lifecycle: `main()`/`run()` split ensures `defer` cleanup runs on all exit paths | `cmd/run-pipeline/main.go` |
 | DOT parser | Recursion depth limit: max 50 nested subgraphs prevents stack overflow | `dot/parser.go` |
 
 ---
@@ -1086,6 +1092,8 @@ The runner is a reference entry point that demonstrates how to execute an Attrac
 4. **Set up** logging, Docker container, LLM client, and handler registry
 5. **Run** the pipeline
 6. **Report** results and write `summary.json`
+
+**Container lifecycle:** The runner's `main()` delegates to `run() int` and calls `os.Exit(run())`. This ensures all `defer`-registered cleanup (Docker sandbox stop, companion DB teardown, log file close) executes on every exit path — including pipeline failures and execution errors. Without this pattern, `os.Exit()` and `log.Fatalf()` skip deferred functions, leaking containers.
 
 Key flags:
 

@@ -359,8 +359,10 @@ func TestRunTaskCapture_ReadLoopDetection(t *testing.T) {
 	if !errors.Is(err, ErrReadLoopDetected) {
 		t.Fatalf("expected ErrReadLoopDetected, got: %v", err)
 	}
-	if rounds != 10 {
-		t.Errorf("expected termination at round 10 (nudge at 5, terminate at 10), got %d", rounds)
+	// With maxNudges=2: nudge at round 5, second nudge at round 10,
+	// termination at round 15.
+	if rounds != 15 {
+		t.Errorf("expected termination at round 15 (nudges at 5 and 10, terminate at 15), got %d", rounds)
 	}
 }
 
@@ -466,8 +468,9 @@ func TestRunTaskCapture_NudgeResetsCounter(t *testing.T) {
 }
 
 func TestRunTaskCapture_ReadLoopTermination(t *testing.T) {
-	// With 20 rounds available: nudge at round 5, counter resets, second
-	// detection at round 10 triggers early termination (maxNudges exhausted).
+	// With 20 rounds available and maxNudges=2: nudge at round 5, counter
+	// resets, second nudge at round 10, counter resets, third detection at
+	// round 15 triggers early termination (maxNudges exhausted).
 	mock := &capturingReadCompleter{}
 
 	_, _, rounds, conversation, err := RunTaskCapture(
@@ -477,24 +480,23 @@ func TestRunTaskCapture_ReadLoopTermination(t *testing.T) {
 	if !errors.Is(err, ErrReadLoopDetected) {
 		t.Fatalf("expected ErrReadLoopDetected, got: %v", err)
 	}
-	// Nudge fires at round 5, counter resets. Second detection at round 10
-	// triggers termination. The agent should stop at round 10, not 20.
-	if rounds != 10 {
-		t.Errorf("expected termination at round 10, got round %d", rounds)
+	// Nudge at round 5, second nudge at round 10, termination at round 15.
+	if rounds != 15 {
+		t.Errorf("expected termination at round 15, got round %d", rounds)
 	}
-	if len(mock.requests) != 10 {
-		t.Errorf("expected 10 LLM calls, got %d", len(mock.requests))
+	if len(mock.requests) != 15 {
+		t.Errorf("expected 15 LLM calls, got %d", len(mock.requests))
 	}
 
-	// Conversation should contain exactly 1 nudge (from the first detection).
+	// Conversation should contain exactly 2 nudges before termination.
 	nudgeCount := 0
 	for _, msg := range conversation {
 		if msg.Role == llm.RoleUser && strings.Contains(msg.Text(), "[PIPELINE ENGINE]") {
 			nudgeCount++
 		}
 	}
-	if nudgeCount != 1 {
-		t.Errorf("expected exactly 1 nudge before termination, got %d", nudgeCount)
+	if nudgeCount != 2 {
+		t.Errorf("expected exactly 2 nudges before termination, got %d", nudgeCount)
 	}
 }
 

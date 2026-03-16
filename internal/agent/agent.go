@@ -16,6 +16,16 @@ import (
 const (
 	maxRounds = 50
 
+	// defaultMaxTokens is the total output budget per LLM call (thinking +
+	// response). Must be large enough for extended thinking plus tool call
+	// arguments (e.g., writing a 700-line spec in a single write_file).
+	defaultMaxTokens = 32768
+
+	// defaultReasoningMaxTokens caps thinking tokens so they don't consume
+	// the entire output budget. This is a subset of defaultMaxTokens;
+	// the remainder is available for the model's visible response.
+	defaultReasoningMaxTokens = 12288
+
 	// readLoopThreshold is the number of consecutive read-only rounds before
 	// the agent loop logs a read-loop warning. A read-only round is one where
 	// all tool calls are reads (read_file, grep, glob, shell) with no writes
@@ -26,7 +36,9 @@ const (
 	// maxNudges is the maximum number of course-correction messages injected
 	// into the conversation when a read-loop is detected. After this many
 	// nudges, further detection events escalate to termination (C4).
-	maxNudges = 1
+	// Set to 2 to accommodate complex stages that legitimately need extended
+	// reading (e.g., handlers reading spec + model + store + templates).
+	maxNudges = 2
 )
 
 // ErrRoundLimitReached is returned by RunTaskCapture when the agent exhausts
@@ -69,9 +81,11 @@ func RunTask(ctx context.Context, client Completer, model, prompt, workDir strin
 		slog.Info("agent.round", "round", round+1, "max", maxRounds)
 		compressed := compressHistory(conversation, defaultKeepFullRounds)
 		resp, err := client.Complete(ctx, llm.Request{
-			Model:    model,
-			Messages: compressed,
-			Tools:    toolDefs,
+			Model:              model,
+			Messages:           compressed,
+			Tools:              toolDefs,
+			MaxTokens:          defaultMaxTokens,
+			ReasoningMaxTokens: defaultReasoningMaxTokens,
 		})
 		if err != nil {
 			return fmt.Errorf("agent: LLM call failed on round %d: %w", round, err)
@@ -175,9 +189,11 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 		slog.Info("agent.round", "round", round+1, "max", limit)
 		compressed := compressHistory(conversation, defaultKeepFullRounds)
 		resp, err := client.Complete(ctx, llm.Request{
-			Model:    model,
-			Messages: compressed,
-			Tools:    toolDefs,
+			Model:              model,
+			Messages:           compressed,
+			Tools:              toolDefs,
+			MaxTokens:          defaultMaxTokens,
+			ReasoningMaxTokens: defaultReasoningMaxTokens,
 		})
 		if err != nil {
 			return "", totalUsage, round, conversation, fmt.Errorf("agent: LLM call failed on round %d: %w", round, err)
@@ -240,6 +256,7 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 			}
 		} else {
 			consecutiveReadOnlyRounds = 0
+			nudgeCount = 0 // a write proves the agent isn't stuck; reset for future read phases
 		}
 	}
 

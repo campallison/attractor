@@ -14,7 +14,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -40,6 +39,10 @@ const (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	pipelineFile := flag.String("pipeline", "", "path to DOT pipeline file (required)")
 	budgetTokens := flag.Int("budget", defaultBudgetTokens, "max total tokens before stopping (0 = no limit)")
 	workDir := flag.String("workdir", "", "working directory for the agent (required)")
@@ -56,12 +59,12 @@ func main() {
 	if *pipelineFile == "" {
 		fmt.Fprintln(os.Stderr, "Error: -pipeline flag is required")
 		flag.Usage()
-		os.Exit(1)
+		return 1
 	}
 	if *workDir == "" {
 		fmt.Fprintln(os.Stderr, "Error: -workdir flag is required")
 		flag.Usage()
-		os.Exit(1)
+		return 1
 	}
 
 	loadEnv()
@@ -85,12 +88,14 @@ func main() {
 	fmt.Printf("[1] Loading pipeline from %s...\n", *pipelineFile)
 	dotSource, err := os.ReadFile(*pipelineFile)
 	if err != nil {
-		log.Fatalf("Failed to read pipeline file: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to read pipeline file: %v\n", err)
+		return 1
 	}
 
 	g, err := dot.Parse(string(dotSource))
 	if err != nil {
-		log.Fatalf("Parse error: %v", err)
+		fmt.Fprintf(os.Stderr, "Parse error: %v\n", err)
+		return 1
 	}
 	fmt.Printf("    Graph: %s (%d nodes, %d edges)\n", g.Name, len(g.Nodes), len(g.Edges))
 	fmt.Printf("    Goal: %s\n", truncate(g.Goal(), 80))
@@ -99,7 +104,8 @@ func main() {
 	fmt.Println("[2] Validating...")
 	diags, err := pipeline.ValidateOrError(g)
 	if err != nil {
-		log.Fatalf("Validation error: %v", err)
+		fmt.Fprintf(os.Stderr, "Validation error: %v\n", err)
+		return 1
 	}
 	for _, d := range diags {
 		fmt.Printf("    %s\n", d)
@@ -113,7 +119,8 @@ func main() {
 		fmt.Printf("    (warning: %s)\n", w)
 	}
 	if pfResult.err != nil {
-		log.Fatalf("Pre-flight failed: %v", pfResult.err)
+		fmt.Fprintf(os.Stderr, "Pre-flight failed: %v\n", pfResult.err)
+		return 1
 	}
 	fmt.Println("    Pre-flight passed.")
 
@@ -122,12 +129,14 @@ func main() {
 
 	logsRoot := filepath.Join(*workDir, ".attractor-logs", time.Now().Format("2006-01-02_15-04-05"))
 	if err := os.MkdirAll(logsRoot, 0o755); err != nil {
-		log.Fatalf("Failed to create logs directory: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to create logs directory: %v\n", err)
+		return 1
 	}
 
 	logFilePath := filepath.Join(logsRoot, "pipeline.log")
 	if err := logging.Setup(logFilePath); err != nil {
-		log.Fatalf("Failed to set up logging: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to set up logging: %v\n", err)
+		return 1
 	}
 	defer logging.Teardown()
 
@@ -203,7 +212,8 @@ func main() {
 		} else {
 			fmt.Printf("    Docker: starting container %s with image %s...\n", containerName, *dockerImage)
 			if err := tools.EnsureContainer(*dockerImage, containerName, *workDir); err != nil {
-				log.Fatalf("Failed to start Docker sandbox: %v", err)
+				fmt.Fprintf(os.Stderr, "Failed to start Docker sandbox: %v\n", err)
+				return 1
 			}
 			defer func() {
 				fmt.Printf("Stopping Docker sandbox %s...\n", containerName)
@@ -232,11 +242,9 @@ func main() {
 				dbContainerName := containerName + "-db"
 				fmt.Printf("    Companion DB: starting %s...\n", dbContainerName)
 				if err := tools.SetupCompanionDB(ctx, networkName, dbContainerName, containerName); err != nil {
-					// Clean up partial companion DB resources before exiting.
-					// Cannot use log.Fatalf here — it skips defers (leaking the sandbox).
 					_ = tools.TeardownCompanionDB(ctx, networkName, dbContainerName, containerName)
-					_ = tools.StopContainer(containerName)
-					log.Fatalf("Failed to set up companion database: %v", err)
+					fmt.Fprintf(os.Stderr, "Failed to set up companion database: %v\n", err)
+					return 1
 				}
 				defer func() {
 					fmt.Printf("Stopping companion DB %s...\n", dbContainerName)
@@ -259,7 +267,8 @@ func main() {
 		}
 		client, err := llm.NewClientFromEnv(clientOpts...)
 		if err != nil {
-			log.Fatalf("LLM client error: %v", err)
+			fmt.Fprintf(os.Stderr, "LLM client error: %v\n", err)
+			return 1
 		}
 
 		backend := pipeline.AgentBackend{
@@ -324,7 +333,8 @@ func main() {
 	}
 
 	if err != nil {
-		log.Fatalf("Pipeline execution error: %v", err)
+		fmt.Fprintf(os.Stderr, "Pipeline execution error: %v\n", err)
+		return 1
 	}
 
 	// 6. Report results
@@ -386,10 +396,11 @@ func main() {
 
 	if result.Status == pipeline.StatusFail {
 		fmt.Println("\nPipeline FAILED.")
-		os.Exit(1)
+		return 1
 	}
 
 	fmt.Println("\nPipeline completed successfully!")
+	return 0
 }
 
 func truncate(s string, maxLen int) string {
