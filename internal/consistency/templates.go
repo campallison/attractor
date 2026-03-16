@@ -59,14 +59,14 @@ func CheckTemplateRoutes(root string) Result {
 	}
 	routeSet := make(map[normalizedRoute]bool)
 	for _, r := range routes {
-		method, pattern := splitMethodFromPattern(r.Pattern)
-		norm := normalizeRoutePattern(pattern)
+		method, pattern := SplitMethodFromPattern(r.Pattern)
+		norm := NormalizeRoutePattern(pattern)
 		routeSet[normalizedRoute{Method: strings.ToUpper(method), Pattern: norm}] = true
 	}
 
 	var findings []Finding
 	for _, tu := range templateURLs {
-		normURL := normalizeTemplateURL(tu.RawURL)
+		normURL := NormalizeTemplateURL(tu.RawURL)
 
 		matched := false
 		if tu.Method != "" {
@@ -190,19 +190,19 @@ func extractTemplateURLs(root string) ([]TemplateURL, error) {
 	return urls, err
 }
 
-// splitMethodFromPattern separates "POST /path" into method and path.
+// SplitMethodFromPattern separates "POST /path" into method and path.
 // Returns ("", pattern) if no method prefix is present.
-func splitMethodFromPattern(pattern string) (method, path string) {
+func SplitMethodFromPattern(pattern string) (method, path string) {
 	if idx := strings.IndexByte(pattern, ' '); idx >= 0 {
 		return pattern[:idx], pattern[idx+1:]
 	}
 	return "", pattern
 }
 
-// normalizeRoutePattern converts a Go 1.22+ route pattern into a normalized
+// NormalizeRoutePattern converts a Go 1.22+ route pattern into a normalized
 // form for comparison with template URLs. It strips the trailing {$} (exact
 // match) and replaces path parameters like {teamId} with {_}.
-func normalizeRoutePattern(pattern string) string {
+func NormalizeRoutePattern(pattern string) string {
 	pattern = strings.TrimSuffix(pattern, "{$}")
 	if pattern == "" {
 		pattern = "/"
@@ -210,10 +210,10 @@ func normalizeRoutePattern(pattern string) string {
 	return routeParamRe.ReplaceAllString(pattern, "{_}")
 }
 
-// normalizeTemplateURL replaces Go template expressions (e.g., {{.TeamID}})
+// NormalizeTemplateURL replaces Go template expressions (e.g., {{.TeamID}})
 // with {_} so the URL can be compared against normalized route patterns.
 // Query strings are stripped since Go route patterns are path-only.
-func normalizeTemplateURL(url string) string {
+func NormalizeTemplateURL(url string) string {
 	path, _, _ := strings.Cut(url, "?")
 	return tmplExprRe.ReplaceAllString(path, "{_}")
 }

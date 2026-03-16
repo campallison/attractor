@@ -16,6 +16,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,13 +93,24 @@ func main() {
 		return
 	}
 
-	failures, connErrors := sweepRoutes(baseURL, routes)
+	formMap := buildFormMap(*root)
+
+	failures, connErrors, formFilled := sweepRoutes(baseURL, routes, formMap)
+
+	formSuffix := ""
+	if formFilled > 0 {
+		formSuffix = fmt.Sprintf("; %d with form data", formFilled)
+	}
 
 	if len(failures) > 0 || connErrors > 0 {
-		fmt.Printf("[CHECK:sweep] FAIL (%d routes, %d returned 500, %d unreachable)\n",
-			len(routes), len(failures), connErrors)
+		fmt.Printf("[CHECK:sweep] FAIL (%d routes, %d returned 500, %d unreachable%s)\n",
+			len(routes), len(failures), connErrors, formSuffix)
 		for _, f := range failures {
-			fmt.Printf("  %s %s → HTTP 500\n", f.method, f.path)
+			if len(f.formFields) > 0 {
+				fmt.Printf("  %s %s → HTTP 500 (form: %s)\n", f.method, f.path, strings.Join(f.formFields, ", "))
+			} else {
+				fmt.Printf("  %s %s → HTTP 500\n", f.method, f.path)
+			}
 			if f.body != "" {
 				fmt.Printf("    body: %s\n", f.body)
 			}
@@ -112,7 +124,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("[CHECK:sweep] PASS (%d routes, 0 returned 500)\n", len(routes))
+	fmt.Printf("[CHECK:sweep] PASS (%d routes, 0 returned 500%s)\n", len(routes), formSuffix)
 }
 
 // loadEnvFile reads KEY=VALUE pairs from the given file. Missing files are
@@ -262,16 +274,24 @@ var routeParamRe = regexp.MustCompile(`\{[^}]+\}`)
 const maxBodyCapture = 2048
 
 type sweepFailure struct {
+	method     string
+	path       string
+	body       string
+	formFields []string
+}
+
+// formKey identifies a form by its HTTP method and normalized action path.
+type formKey struct {
 	method string
 	path   string
-	body   string
 }
 
 // sweepRoutes makes one request to each route and collects any that return 500.
-// For 500 responses, up to maxBodyCapture bytes of the response body are
-// captured to help the agent diagnose the root cause.
-// Connection errors (server crashed mid-sweep) are counted separately.
-func sweepRoutes(baseURL string, routes []consistency.Route) (failures []sweepFailure, connErrors int) {
+// For POST/PUT/PATCH/DELETE routes with a matching HTML form, the request body
+// is populated with dummy form data so the sweep exercises business logic
+// beyond input validation guards.
+// Returns failures, connection errors, and the count of routes swept with form data.
+func sweepRoutes(baseURL string, routes []consistency.Route, formMap map[formKey][]consistency.FormField) (failures []sweepFailure, connErrors int, formFilled int) {
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -281,12 +301,31 @@ func sweepRoutes(baseURL string, routes []consistency.Route) (failures []sweepFa
 
 	for _, r := range routes {
 		method, path := parsePattern(r.Pattern)
+		path = strings.TrimSuffix(path, "{$}")
+		normPath := consistency.NormalizeRoutePattern(path)
 		path = routeParamRe.ReplaceAllString(path, "test-placeholder")
 
-		url := baseURL + path
-		req, err := http.NewRequest(method, url, nil)
+		reqURL := baseURL + path
+
+		var body io.Reader
+		var fieldNames []string
+
+		if fields, ok := formMap[formKey{method: method, path: normPath}]; ok && len(fields) > 0 {
+			vals := url.Values{}
+			for _, f := range fields {
+				vals.Set(f.Name, dummyValue(f.Name, f.Type))
+				fieldNames = append(fieldNames, f.Name)
+			}
+			body = strings.NewReader(vals.Encode())
+			formFilled++
+		}
+
+		req, err := http.NewRequest(method, reqURL, body)
 		if err != nil {
 			continue
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		}
 
 		resp, err := client.Do(req)
@@ -296,23 +335,76 @@ func sweepRoutes(baseURL string, routes []consistency.Route) (failures []sweepFa
 		}
 
 		if resp.StatusCode == http.StatusInternalServerError {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyCapture))
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyCapture))
 			resp.Body.Close()
 			failures = append(failures, sweepFailure{
-				method: method,
-				path:   path,
-				body:   strings.TrimSpace(string(body)),
+				method:     method,
+				path:       path,
+				body:       strings.TrimSpace(string(respBody)),
+				formFields: fieldNames,
 			})
 		} else {
 			resp.Body.Close()
 		}
 	}
 
-	return failures, connErrors
+	return failures, connErrors, formFilled
+}
+
+// buildFormMap extracts HTML forms from the project's templates and builds a
+// lookup map keyed by (method, normalized-action) for use during the sweep.
+func buildFormMap(root string) map[formKey][]consistency.FormField {
+	forms, err := consistency.ExtractForms(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: form extraction failed: %v\n", err)
+		return nil
+	}
+
+	m := make(map[formKey][]consistency.FormField)
+	for _, f := range forms {
+		if f.Action == "" || len(f.Fields) == 0 {
+			continue
+		}
+		norm := consistency.NormalizeRoutePattern(f.Action)
+		key := formKey{method: strings.ToUpper(f.Method), path: norm}
+		if _, exists := m[key]; !exists {
+			m[key] = f.Fields
+		}
+	}
+	return m
+}
+
+// dummyValue returns a plausible dummy value for a form field based on its
+// name and input type. The goal is to pass server-side validation guards so
+// the sweep exercises actual business logic.
+func dummyValue(name, inputType string) string {
+	lower := strings.ToLower(name)
+
+	if strings.Contains(lower, "email") || inputType == "email" {
+		return "test@example.com"
+	}
+	if strings.Contains(lower, "password") || inputType == "password" {
+		return "testpass123"
+	}
+	if strings.Contains(lower, "url") || inputType == "url" {
+		return "https://example.com"
+	}
+	if strings.Contains(lower, "name") {
+		return "Test User"
+	}
+	if inputType == "number" {
+		return "42"
+	}
+	if inputType == "hidden" {
+		return "test-hidden"
+	}
+
+	return "test-value"
 }
 
 // parsePattern splits a Go 1.22+ route pattern like "GET /foo/{id}" into
-// method and path. Patterns without a method prefix default to GET.
+// method and path. Patterns without a method prefix default to GET (unlike
+// consistency.SplitMethodFromPattern which returns "" to mean "any method").
 func parsePattern(pattern string) (method, path string) {
 	pattern = strings.TrimSpace(pattern)
 	if i := strings.Index(pattern, " "); i > 0 {

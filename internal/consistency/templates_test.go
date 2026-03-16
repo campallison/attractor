@@ -327,9 +327,9 @@ func TestNormalizeRoutePattern(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := normalizeRoutePattern(tt.input)
+			got := NormalizeRoutePattern(tt.input)
 			if got != tt.want {
-				t.Errorf("normalizeRoutePattern(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("NormalizeRoutePattern(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -351,9 +351,9 @@ func TestNormalizeTemplateURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := normalizeTemplateURL(tt.input)
+			got := NormalizeTemplateURL(tt.input)
 			if got != tt.want {
-				t.Errorf("normalizeTemplateURL(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("NormalizeTemplateURL(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -372,9 +372,9 @@ func TestSplitMethodFromPattern(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			method, path := splitMethodFromPattern(tt.input)
+			method, path := SplitMethodFromPattern(tt.input)
 			if method != tt.wantMethod || path != tt.wantPath {
-				t.Errorf("splitMethodFromPattern(%q) = (%q, %q), want (%q, %q)",
+				t.Errorf("SplitMethodFromPattern(%q) = (%q, %q), want (%q, %q)",
 					tt.input, method, path, tt.wantMethod, tt.wantPath)
 			}
 		})

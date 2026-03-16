@@ -848,6 +848,7 @@ check-consistency --root=/workspace [--checks=routes]
 | `consistency/check.go` | Result, Finding, Severity types; CheckFunc registry; RunChecks orchestration |
 | `consistency/routes.go` | Route-handler agreement check; Go AST parsing utilities (parseGoFiles, extractRoutes, extractHandlers, isHandlerSignature) |
 | `consistency/templates.go` | Template-route agreement check; HTML scanning, URL normalization, cross-referencing |
+| `consistency/forms.go` | HTML form extraction (`ExtractForms`); parses `<form>` elements and child input fields from template files for use by the behavioral sweep |
 | `consistency/tmplexist.go` | Template name existence check; `{{define}}` / `{{template}}` scanning, Go `Render`/`ExecuteTemplate` call extraction |
 | `consistency/store.go` | Store interface agreement check; interface extraction, struct field type mapping, field method call detection |
 | `cmd/check-consistency/main.go` | CLI entry point |
@@ -871,16 +872,17 @@ The `check-behavioral` binary runs inside the Docker sandbox as part of a stage'
 4. Starts a background goroutine to continuously drain server stderr into a ring buffer (last 50 lines), preventing the server from blocking on a full pipe
 5. Polls for health (any HTTP response from `/` within the timeout)
 6. Extracts all registered routes from Go source (reuses `consistency.ListRoutes`)
-7. Sweeps every route with an HTTP request — any HTTP 500 captures the response body (up to 2KB) for diagnostics
-8. On failure, includes captured server stderr alongside route-level details
-9. Kills the server and reports results
+7. Extracts HTML forms from templates (`consistency.ExtractForms`), matching form actions to route patterns to build a form-field map
+8. Sweeps every route with an HTTP request. For POST/PUT/PATCH/DELETE routes with a matching HTML form, the request body is populated with dummy form data (plausible values based on field name and type) so the sweep exercises business logic beyond input validation guards. Any HTTP 500 captures the response body (up to 2KB) for diagnostics.
+9. On failure, includes captured server stderr alongside route-level details
+10. Kills the server and reports results
 
 ### Checks
 
 | Check | What it catches |
 |---|---|
 | `startup` | Server won't start: missing env vars, bad DB connection, init panics |
-| `sweep` | Routes that return HTTP 500: bad SQL, nil pointer dereferences, template rendering errors. For each 500, the response body (up to 2KB) is captured. Server stderr is included on failure. |
+| `sweep` | Routes that return HTTP 500: bad SQL, nil pointer dereferences, template rendering errors, error-handling bugs in form submission paths. POST/PUT/PATCH/DELETE routes with matching HTML forms are swept with plausible form data to penetrate input validation guards. For each 500, the response body (up to 2KB) is captured. Server stderr is included on failure. |
 
 ### Infrastructure: Companion Database
 
@@ -916,29 +918,31 @@ check-behavioral [--root=.] [--timeout=15s] [--env-file=/opt/attractor/env]
 
 ```
 [CHECK:startup] PASS
-[CHECK:sweep] PASS (10 routes, 0 returned 500)
+[CHECK:sweep] PASS (10 routes, 0 returned 500; 3 with form data)
 ```
+
+The `with form data` count shows how many routes were swept with populated form bodies (matched from HTML templates) rather than bare empty requests.
 
 On failure, the output includes diagnostic detail:
 
 ```
 [CHECK:startup] PASS
-[CHECK:sweep] FAIL (10 routes, 2 returned 500, 0 unreachable)
+[CHECK:sweep] FAIL (10 routes, 2 returned 500, 0 unreachable; 3 with form data)
   GET /api/items → HTTP 500
     body: Internal Server Error: pq: relation "items" does not exist
-  POST /api/items → HTTP 500
-    body: Internal Server Error
+  POST /teams/join → HTTP 500 (form: team-name, password, display-name)
+    body: Internal server error.
   server log:
     2026/03/06 12:00:01 ERROR handler items sql error="relation \"items\" does not exist"
 ```
 
-Response bodies surface the server's error message (e.g., missing DB table, template panic). Server stderr captures log output from the server process during the sweep, often showing the stack trace or SQL error that caused the 500. Together they give agents enough context to fix the root cause without re-running the check.
+For form-backed failures, the submitted field names are listed in the `(form: ...)` suffix so the agent can see what payload triggered the 500. Response bodies surface the server's error message (e.g., missing DB table, template panic). Server stderr captures log output from the server process during the sweep, often showing the stack trace or SQL error that caused the 500. Together they give agents enough context to fix the root cause without re-running the check.
 
 ### Files
 
 | File | Purpose |
 |---|---|
-| `cmd/check-behavioral/main.go` | CLI entry point: server lifecycle, health probe, route sweep with response body capture and server stderr diagnostics |
+| `cmd/check-behavioral/main.go` | CLI entry point: server lifecycle, health probe, form-aware route sweep with dummy data generation, response body capture, and server stderr diagnostics |
 | `internal/tools/companion.go` | `SetupCompanionDB` / `TeardownCompanionDB`: Docker network and PostgreSQL container lifecycle |
 | `internal/tools/provision.go` | `ProvisionCheckTools`: cross-compiles and copies both check binaries into the sandbox |
 

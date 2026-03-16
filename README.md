@@ -122,7 +122,7 @@ Key concepts:
 - **Goal gates:** Nodes with `goal_gate=true` must succeed before the pipeline can exit
 - **Edge conditions:** Edges can have conditions like `condition="outcome=success"` to control routing
 - **Retry:** Nodes support `max_retries` with exponential backoff
-- **Build gates:** Nodes can specify `check_cmd="go build ./..."` to run a compilation check after each stage. If the check fails, the engine parses `[CHECK:name] PASS/FAIL` markers from the output and builds a structured retry prompt showing only failing checks' details. The agent is re-invoked up to `check_max_retries` times (default 3). For richer validation, chain `check-consistency` (static analysis) and `check-behavioral` (server startup + route sweep with response body capture and server log diagnostics): `check_cmd="go build ./... && check-consistency && check-behavioral"`
+- **Build gates:** Nodes can specify `check_cmd="go build ./..."` to run a compilation check after each stage. If the check fails, the engine parses `[CHECK:name] PASS/FAIL` markers from the output and builds a structured retry prompt showing only failing checks' details. The agent is re-invoked up to `check_max_retries` times (default 3). For richer validation, chain `check-consistency` (static analysis) and `check-behavioral` (form-aware server startup + route sweep): `check_cmd="go build ./... && check-consistency && check-behavioral"`. The behavioral sweep parses HTML forms from templates and submits them with plausible dummy data, exercising server-side business logic beyond input validation guards.
 - **Per-stage round limits:** Nodes can specify `max_rounds=25` to cap how many agent rounds a stage may run, preventing runaway stages from burning tokens
 - **Usage tracking:** Each codergen stage writes a `usage.json` with token counts, and the pipeline aggregates totals in `RunResult`
 - **Budget cap:** Set `MaxBudgetTokens` on `RunConfig` to halt the pipeline if cumulative token usage exceeds a threshold
@@ -161,6 +161,7 @@ The runner performs a pre-flight checklist (workdir, API key, Docker, model vali
 | DOT Parser | Hand-rolled | Full control over the spec's strict subset, custom attribute types, and error messages |
 | Testing | Table-driven + go-cmp | Consistent patterns, readable diffs, easy to extend |
 | Build Gates | `check_cmd` attribute | Compiler-enforced correctness between stages; catches cross-file inconsistencies early |
+| Form-Aware Sweep | HTML form parsing + dummy data | `check-behavioral` extracts forms from templates, matches them to routes, and submits plausible form data; catches error-handling bugs hidden behind validation guards |
 | Contract-First Design | Interface files from design stage | Downstream stages implement against shared Go interfaces, enforced by `go build` gates |
 | Prompt Caching | Anthropic `cache_control` via OpenRouter | System/user messages cached at ~10% cost; reduces input token expense across multi-round agent loops |
 | Context Carryover | Stage summaries injected into downstream prompts | Reduces redundant file reads by giving each stage a structured summary of what prior stages produced |
