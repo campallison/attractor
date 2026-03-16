@@ -141,8 +141,8 @@ go run ./cmd/run-pipeline/ -pipeline pipelines/my-pipeline.dot --simulate
 # Cheap test run with a different model + zero data retention
 go run ./cmd/run-pipeline/ -pipeline pipelines/my-pipeline.dot --model-override google/gemini-2.5-flash --zdr
 
-# Production run with prompt caching enabled (reduces cost for Anthropic models)
-go run ./cmd/run-pipeline/ -pipeline pipelines/my-pipeline.dot --prompt-cache
+# Disable prompt caching (on by default for Anthropic models)
+go run ./cmd/run-pipeline/ -pipeline pipelines/my-pipeline.dot -workdir /path/to/workdir --prompt-cache=false
 
 # Run with companion database for behavioral validation (starts per-run PostgreSQL)
 go run ./cmd/run-pipeline/ -pipeline pipelines/my-pipeline.dot -workdir /path/to/workdir --companion-db

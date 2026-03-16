@@ -49,7 +49,7 @@ func run() int {
 	model := flag.String("model", defaultModel, "default LLM model")
 	modelOverride := flag.String("model-override", "", "override ALL stage models with this model (useful for cheap test runs)")
 	zdr := flag.Bool("zdr", false, "enforce Zero Data Retention routing on OpenRouter")
-	promptCache := flag.Bool("prompt-cache", false, "enable prompt caching for Anthropic models (reduces input token cost)")
+	promptCache := flag.Bool("prompt-cache", true, "prompt caching for Anthropic models (default on; disable with -prompt-cache=false)")
 	dockerImage := flag.String("docker-image", defaultDockerImage, "Docker image for shell sandbox")
 	noDocker := flag.Bool("no-docker", false, "skip Docker container setup (shell commands will fail)")
 	companionDB := flag.Bool("companion-db", false, "start a companion PostgreSQL container for behavioral validation")

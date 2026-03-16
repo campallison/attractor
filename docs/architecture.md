@@ -1104,7 +1104,7 @@ Key flags:
 | `--simulate` | Use `SimulatedBackend` (no LLM, no Docker) for structural testing |
 | `--model-override MODEL` | Force all stages to use a specific model (useful for cheap test runs) |
 | `--zdr` | Enforce Zero Data Retention routing on OpenRouter |
-| `--prompt-cache` | Enable prompt caching for Anthropic models (reduces input token cost) |
+| `--prompt-cache` | Prompt caching for Anthropic models (default: **on**; disable with `--prompt-cache=false`) |
 | `--budget N` | Max total tokens before stopping |
 | `--no-docker` | Skip Docker container setup (build gates disabled) |
 
