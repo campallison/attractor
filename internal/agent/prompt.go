@@ -13,6 +13,12 @@ func BuildSystemPrompt(workDir string) string {
 
 When creating or modifying files, use the write_file tool to create new files and the edit_file tool to modify existing files. Use read_file to inspect files before editing them.
 
+How to approach your work:
+1. READ all relevant files before writing anything. Understand the spec, existing code, and constraints.
+2. PLAN which files you will create or modify and what each will contain. Write your plan to _scratch/plan.md.
+3. IMPLEMENT the plan. Write files in dependency order (models before stores, stores before handlers).
+4. CHECK your work against the requirements. When a check command is available, use it to validate your work instead of re-reading files you just wrote. When no check command is available, spot-check key outputs against the spec. Once checks pass, write _scratch/SUMMARY.md and stop.
+
 Git rules:
 - You MAY use: git add, git commit, git status, git diff, git log, git stash
 - You MUST NOT use: git push, git remote, git config, git reset --hard, git clean, git rebase

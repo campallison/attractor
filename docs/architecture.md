@@ -259,6 +259,8 @@ Both run the identical agent loop; `RunTaskCapture` was added for Layer 3 so the
 
 **Agent exhaustion:** When the agent hits the round limit without producing a text-only response, `RunTaskCapture` returns `agent.ErrRoundLimitReached`. This sentinel error causes the pipeline's codergen handler to report `StatusFail`, preventing silent failures from being treated as success. The round limit defaults to 50 but can be overridden per-stage via the `max_rounds` DOT attribute, allowing simpler stages to fail fast while complex stages get more room.
 
+**Structured methodology:** The system prompt instructs agents to follow a read-plan-implement-check sequence: read all relevant files before writing, plan the work in `_scratch/plan.md`, implement in dependency order, and validate via check commands rather than re-reading output. This reduces failure demand by front-loading comprehension (fewer fix-compile cycles) and eliminating post-hoc verification loops (the primary trigger for read-loop detection).
+
 **LLM token budgets:** Each LLM call uses `defaultMaxTokens` (32,768) as the total output budget and `defaultReasoningMaxTokens` (12,288) to cap thinking tokens. The remainder (20,480 tokens) is available for the model's visible response — tool call arguments, file contents, etc. These defaults prevent adaptive thinking from consuming the entire budget on complex tasks.
 
 **Conversation compression:** The agent loop compresses conversation history as it grows. After a configurable number of recent rounds (default 4), older tool results are summarized. Compression uses several strategies: `write_file`/`edit_file` results are compressed immediately regardless of age ("write-and-forget"), large `read_file` results get skeleton summaries (first/last few lines), short `shell` outputs are preserved verbatim, and other tool results get one-line path-based summaries.
@@ -268,7 +270,7 @@ Both run the identical agent loop; `RunTaskCapture` was added for Layer 3 so the
 | File | Purpose |
 |---|---|
 | `agent/agent.go` | RunTask, RunTaskCapture (with usage tracking, exhaustion detection, read-loop detection + nudge injection), executeTool, round loop |
-| `agent/prompt.go` | BuildSystemPrompt with env context, git deny-list rules, network rules, working memory convention (`_scratch/`) |
+| `agent/prompt.go` | BuildSystemPrompt with structured methodology (read/plan/implement/check), env context, git deny-list rules, network rules, working memory convention (`_scratch/`) |
 | `agent/compress.go` | Conversation history compression (summarizes old tool results to reduce token costs) |
 | `tools/tools.go` | ToolExecutor, RegisteredTool, Registry, DefaultRegistry |
 | `tools/readfile.go` | read_file implementation, resolvePath with symlink resolution, sensitive file deny-list |

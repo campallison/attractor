@@ -164,6 +164,7 @@ The runner performs a pre-flight checklist (workdir, API key, Docker, model vali
 | Contract-First Design | Interface files from design stage | Downstream stages implement against shared Go interfaces, enforced by `go build` gates |
 | Prompt Caching | Anthropic `cache_control` via OpenRouter | System/user messages cached at ~10% cost; reduces input token expense across multi-round agent loops |
 | Context Carryover | Stage summaries injected into downstream prompts | Reduces redundant file reads by giving each stage a structured summary of what prior stages produced |
+| Agent Methodology | Read-plan-implement-check in system prompt | Agents follow a structured sequence: read all relevant files, plan in `_scratch/plan.md`, implement in dependency order, validate via check commands instead of re-reading output |
 | Working Memory | `_scratch/` directory with engine lifecycle | Agents maintain working notes; engine seeds context, verifies summary, archives, and cleans between stages |
 | Behavioral Detection | Read-loop detection, nudge, escalation, empty-output | Detects 5+ consecutive read-only rounds, injects up to 2 course-correction nudges (resetting on writes), and terminates the stage early if the pattern persists after nudges are exhausted; warns when a stage produces no deliverable files |
 | Filesystem Observation | Directory snapshots + diff between stages | Ground-truth detection of what files an agent added, removed, or modified — independent of conversation reports; enhances empty-output detection and provides diffs for downstream context |
