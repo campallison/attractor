@@ -861,17 +861,19 @@ The `check-behavioral` binary runs inside the Docker sandbox as part of a stage'
 1. Reads `DATABASE_URL` from `/opt/attractor/env` (written by the runner)
 2. Auto-discovers the server entry point under `cmd/*/main.go`
 3. Builds and starts the server on a random port
-4. Polls for health (any HTTP response from `/` within the timeout)
-5. Extracts all registered routes from Go source (reuses `consistency.ListRoutes`)
-6. Sweeps every route with an HTTP request — any HTTP 500 is a failure
-7. Kills the server and reports results
+4. Starts a background goroutine to continuously drain server stderr into a ring buffer (last 50 lines), preventing the server from blocking on a full pipe
+5. Polls for health (any HTTP response from `/` within the timeout)
+6. Extracts all registered routes from Go source (reuses `consistency.ListRoutes`)
+7. Sweeps every route with an HTTP request — any HTTP 500 captures the response body (up to 2KB) for diagnostics
+8. On failure, includes captured server stderr alongside route-level details
+9. Kills the server and reports results
 
 ### Checks
 
 | Check | What it catches |
 |---|---|
 | `startup` | Server won't start: missing env vars, bad DB connection, init panics |
-| `sweep` | Routes that return HTTP 500: bad SQL, nil pointer dereferences, template rendering errors |
+| `sweep` | Routes that return HTTP 500: bad SQL, nil pointer dereferences, template rendering errors. For each 500, the response body (up to 2KB) is captured. Server stderr is included on failure. |
 
 ### Infrastructure: Companion Database
 
@@ -910,11 +912,26 @@ check-behavioral [--root=.] [--timeout=15s] [--env-file=/opt/attractor/env]
 [CHECK:sweep] PASS (10 routes, 0 returned 500)
 ```
 
+On failure, the output includes diagnostic detail:
+
+```
+[CHECK:startup] PASS
+[CHECK:sweep] FAIL (10 routes, 2 returned 500, 0 unreachable)
+  GET /api/items → HTTP 500
+    body: Internal Server Error: pq: relation "items" does not exist
+  POST /api/items → HTTP 500
+    body: Internal Server Error
+  server log:
+    2026/03/06 12:00:01 ERROR handler items sql error="relation \"items\" does not exist"
+```
+
+Response bodies surface the server's error message (e.g., missing DB table, template panic). Server stderr captures log output from the server process during the sweep, often showing the stack trace or SQL error that caused the 500. Together they give agents enough context to fix the root cause without re-running the check.
+
 ### Files
 
 | File | Purpose |
 |---|---|
-| `cmd/check-behavioral/main.go` | CLI entry point: server lifecycle, health probe, route sweep |
+| `cmd/check-behavioral/main.go` | CLI entry point: server lifecycle, health probe, route sweep with response body capture and server stderr diagnostics |
 | `internal/tools/companion.go` | `SetupCompanionDB` / `TeardownCompanionDB`: Docker network and PostgreSQL container lifecycle |
 | `internal/tools/provision.go` | `ProvisionCheckTools`: cross-compiles and copies both check binaries into the sandbox |
 

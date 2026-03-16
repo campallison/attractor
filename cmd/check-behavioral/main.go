@@ -13,6 +13,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -56,13 +57,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Monitor the server process for unexpected exits.
+	// Continuously drain stderr so the server doesn't block on a full pipe buffer.
+	serverLog := newStderrCapture(stderr, 50)
+
 	exited := make(chan error, 1)
 	go func() { exited <- proc.Wait() }()
 
 	defer func() {
 		proc.Process.Kill()
-		// Wait may already have returned; second call is harmless.
 		<-exited
 	}()
 
@@ -71,7 +73,7 @@ func main() {
 	if err := waitForHealth(baseURL, *timeout, exited); err != nil {
 		fmt.Printf("[CHECK:startup] FAIL (0 routes checked)\n")
 		fmt.Printf("  server did not become healthy within %s: %v\n", *timeout, err)
-		if output := drainScanner(stderr); output != "" {
+		if output := serverLog.String(); output != "" {
 			fmt.Printf("  server stderr:\n%s\n", indent(output, "    "))
 		}
 		os.Exit(1)
@@ -97,9 +99,15 @@ func main() {
 			len(routes), len(failures), connErrors)
 		for _, f := range failures {
 			fmt.Printf("  %s %s → HTTP 500\n", f.method, f.path)
+			if f.body != "" {
+				fmt.Printf("    body: %s\n", f.body)
+			}
 		}
 		if connErrors > 0 {
 			fmt.Printf("  %d routes unreachable (server may have crashed)\n", connErrors)
+		}
+		if output := serverLog.String(); output != "" {
+			fmt.Printf("  server log:\n%s\n", indent(output, "    "))
 		}
 		os.Exit(1)
 	}
@@ -251,12 +259,17 @@ func waitForHealth(baseURL string, timeout time.Duration, exited <-chan error) e
 
 var routeParamRe = regexp.MustCompile(`\{[^}]+\}`)
 
+const maxBodyCapture = 2048
+
 type sweepFailure struct {
 	method string
 	path   string
+	body   string
 }
 
 // sweepRoutes makes one request to each route and collects any that return 500.
+// For 500 responses, up to maxBodyCapture bytes of the response body are
+// captured to help the agent diagnose the root cause.
 // Connection errors (server crashed mid-sweep) are counted separately.
 func sweepRoutes(baseURL string, routes []consistency.Route) (failures []sweepFailure, connErrors int) {
 	client := &http.Client{
@@ -281,10 +294,17 @@ func sweepRoutes(baseURL string, routes []consistency.Route) (failures []sweepFa
 			connErrors++
 			continue
 		}
-		resp.Body.Close()
 
 		if resp.StatusCode == http.StatusInternalServerError {
-			failures = append(failures, sweepFailure{method: method, path: path})
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyCapture))
+			resp.Body.Close()
+			failures = append(failures, sweepFailure{
+				method: method,
+				path:   path,
+				body:   strings.TrimSpace(string(body)),
+			})
+		} else {
+			resp.Body.Close()
 		}
 	}
 
@@ -301,29 +321,34 @@ func parsePattern(pattern string) (method, path string) {
 	return "GET", pattern
 }
 
-func drainScanner(sc *bufio.Scanner) string {
-	var mu sync.Mutex
-	var lines []string
-	done := make(chan struct{})
+// stderrCapture reads from a scanner in a background goroutine and retains the
+// last maxLines lines in a ring buffer. This prevents the server process from
+// blocking on a full stderr pipe while providing diagnostic output on demand.
+type stderrCapture struct {
+	mu       sync.Mutex
+	lines    []string
+	maxLines int
+}
+
+func newStderrCapture(sc *bufio.Scanner, maxLines int) *stderrCapture {
+	c := &stderrCapture{maxLines: maxLines}
 	go func() {
 		for sc.Scan() {
-			mu.Lock()
-			lines = append(lines, sc.Text())
-			if len(lines) > 50 {
-				lines = lines[len(lines)-50:]
+			c.mu.Lock()
+			c.lines = append(c.lines, sc.Text())
+			if len(c.lines) > c.maxLines {
+				c.lines = c.lines[len(c.lines)-c.maxLines:]
 			}
-			mu.Unlock()
+			c.mu.Unlock()
 		}
-		close(done)
 	}()
+	return c
+}
 
-	select {
-	case <-done:
-	case <-time.After(1 * time.Second):
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	return strings.Join(lines, "\n")
+func (c *stderrCapture) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return strings.Join(c.lines, "\n")
 }
 
 func indent(s, prefix string) string {
