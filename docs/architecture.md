@@ -261,6 +261,8 @@ Both run the identical agent loop; `RunTaskCapture` was added for Layer 3 so the
 
 **Structured methodology:** The system prompt instructs agents to follow a read-plan-implement-check sequence: read all relevant files before writing, plan the work in `_scratch/plan.md`, implement in dependency order, and validate via check commands rather than re-reading output. This reduces failure demand by front-loading comprehension (fewer fix-compile cycles) and eliminating post-hoc verification loops (the primary trigger for read-loop detection).
 
+**Failure demand tracking:** The agent loop classifies every tool call as value demand (productive work) or failure demand (rework caused by prior mistakes). Reading a file the agent never wrote is value; re-reading a file the agent itself created is failure demand. First writes are value; rewrites to the same path are failure demand. Shell commands default to value. The ratio is logged at agent completion (`agent.complete`, `agent.round_limit`, `agent.read_loop_terminated`) and appears in the pipeline JSON log. A high failure-demand ratio (>40%) is a signal that prompts, stage decomposition, or check commands need improvement.
+
 **LLM token budgets:** Each LLM call uses `defaultMaxTokens` (32,768) as the total output budget and `defaultReasoningMaxTokens` (12,288) to cap thinking tokens. The remainder (20,480 tokens) is available for the model's visible response — tool call arguments, file contents, etc. These defaults prevent adaptive thinking from consuming the entire budget on complex tasks.
 
 **Conversation compression:** The agent loop compresses conversation history as it grows. After a configurable number of recent rounds (default 4), older tool results are summarized. Compression uses several strategies: `write_file`/`edit_file` results are compressed immediately regardless of age ("write-and-forget"), large `read_file` results get skeleton summaries (first/last few lines), short `shell` outputs are preserved verbatim, and other tool results get one-line path-based summaries.
@@ -269,7 +271,8 @@ Both run the identical agent loop; `RunTaskCapture` was added for Layer 3 so the
 
 | File | Purpose |
 |---|---|
-| `agent/agent.go` | RunTask, RunTaskCapture (with usage tracking, exhaustion detection, read-loop detection + nudge injection), executeTool, round loop |
+| `agent/agent.go` | RunTask, RunTaskCapture (with usage tracking, exhaustion detection, read-loop detection + nudge injection, failure demand tracking), executeTool, round loop |
+| `agent/demand.go` | Failure demand classification: value vs. failure demand heuristics for tool calls, ratio computation |
 | `agent/prompt.go` | BuildSystemPrompt with structured methodology (read/plan/implement/check), env context, git deny-list rules, network rules, working memory convention (`_scratch/`) |
 | `agent/compress.go` | Conversation history compression (summarizes old tool results to reduce token costs) |
 | `tools/tools.go` | ToolExecutor, RegisteredTool, Registry, DefaultRegistry |

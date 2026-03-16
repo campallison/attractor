@@ -64,6 +64,9 @@ type Completer interface {
 // definitions, executes any tool calls the model requests, feeds results back,
 // and repeats until the model responds with text only or the round limit is hit.
 //
+// Unlike RunTaskCapture, this function does not track failure demand — it is
+// the simpler CLI-facing path used by cmd/test-agent for smoke tests.
+//
 // The caller must supply a pre-built tool registry. Use tools.DefaultRegistry
 // to construct one with the standard tool set.
 func RunTask(ctx context.Context, client Completer, model, prompt, workDir string, registry *tools.Registry) error {
@@ -184,6 +187,7 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 	var totalUsage llm.Usage
 	var consecutiveReadOnlyRounds int
 	var nudgeCount int
+	demand := newDemandTracker()
 
 	for round := 0; round < limit; round++ {
 		slog.Info("agent.round", "round", round+1, "max", limit)
@@ -208,7 +212,10 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 
 		toolCalls := resp.ToolCalls()
 		if len(toolCalls) == 0 {
-			slog.Info("agent.complete", "rounds", round+1, "tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens)
+			slog.Info("agent.complete", "rounds", round+1,
+				"tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens,
+				"value_calls", demand.ValueCalls, "failure_calls", demand.FailureCalls,
+				"failure_demand_ratio", demand.ratio())
 			return lastText, totalUsage, round + 1, conversation, nil
 		}
 
@@ -216,6 +223,7 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 
 		for _, tc := range toolCalls {
 			result := executeTool(ctx, registry, tc, workDir)
+			demand.classify(tc)
 			slog.Info("agent.tool", "tool", tc.Name, "result_bytes", len(result.Content), "is_error", result.IsError)
 			conversation = append(conversation, llm.ToolResultMessage(
 				result.ToolCallID,
@@ -250,6 +258,8 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 						"nudge_count", nudgeCount,
 						"tokens_in", totalUsage.InputTokens,
 						"tokens_out", totalUsage.OutputTokens,
+						"value_calls", demand.ValueCalls, "failure_calls", demand.FailureCalls,
+						"failure_demand_ratio", demand.ratio(),
 					)
 					return lastText, totalUsage, round + 1, conversation, ErrReadLoopDetected
 				}
@@ -260,7 +270,10 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 		}
 	}
 
-	slog.Warn("agent.round_limit", "rounds", limit, "tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens)
+	slog.Warn("agent.round_limit", "rounds", limit,
+		"tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens,
+		"value_calls", demand.ValueCalls, "failure_calls", demand.FailureCalls,
+		"failure_demand_ratio", demand.ratio())
 	return lastText, totalUsage, limit, conversation, ErrRoundLimitReached
 }
 
