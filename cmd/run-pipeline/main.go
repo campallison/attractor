@@ -134,11 +134,12 @@ func run() int {
 	}
 
 	logFilePath := filepath.Join(logsRoot, "pipeline.log")
-	if err := logging.Setup(logFilePath); err != nil {
+	teardownLog, err := logging.Setup(logFilePath)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to set up logging: %v\n", err)
 		return 1
 	}
-	defer logging.Teardown()
+	defer teardownLog()
 
 	// Observability database: connect if ATTRACTOR_DB_URL is set.
 	var recorder store.RunRecorder = store.NopRecorder{}
