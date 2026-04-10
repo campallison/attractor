@@ -140,24 +140,6 @@ func (h CodergenHandler) Execute(ctx context.Context, node *dot.Node, pctx *Cont
 		slog.Info("pipeline.snapshot.skipped", "node", node.ID, "reason", "no work dir (simulate mode)")
 	}
 
-	// fileDiffCounts converts a FileDiff pointer into a FileDiffCounts pointer
-	// for inclusion in the Outcome.
-	fileDiffCounts := func(fd *FileDiff) *FileDiffCounts {
-		if fd == nil {
-			return nil
-		}
-		return &FileDiffCounts{
-			Added:     len(fd.Added),
-			Modified:  len(fd.Modified),
-			Removed:   len(fd.Removed),
-			Unchanged: fd.Unchanged,
-		}
-	}
-
-	// captureFilesystemDiff takes the after-snapshot, computes the diff against
-	// beforeSnap, writes it to the stage log directory, and returns it. Called
-	// on both success and failure paths so post-mortem analysis always has
-	// filesystem data.
 	captureFilesystemDiff := func() *FileDiff {
 		if h.WorkDir == "" || beforeSnap == nil {
 			return nil
@@ -228,7 +210,7 @@ func (h CodergenHandler) Execute(ctx context.Context, node *dot.Node, pctx *Cont
 				ExhaustionReason: result.ExhaustionReason,
 				PromptLength:     len(prompt),
 				ResponseLength:   len(responseText),
-				FileDiffCounts:   fileDiffCounts(fsDiff),
+				FileDiffCounts:   toFileDiffCounts(fsDiff),
 			}
 			writeStatus(stageDir, outcome)
 			return outcome
@@ -236,87 +218,43 @@ func (h CodergenHandler) Execute(ctx context.Context, node *dot.Node, pctx *Cont
 
 		// Build gate: run check_cmd after successful completion.
 		if checkCmd := node.CheckCmd(); checkCmd != "" && h.CheckRunner != nil {
-			maxAttempts := node.CheckMaxRetries()
-			for attempt := 1; attempt <= maxAttempts; attempt++ {
-				buildGateAttempts = attempt
-				slog.Info("pipeline.buildgate", "node", node.ID, "attempt", attempt, "cmd", checkCmd)
-				checkOutput, checkErr := h.CheckRunner(ctx, checkCmd)
-				if checkErr == nil {
-					slog.Info("pipeline.buildgate.pass", "node", node.ID, "attempt", attempt)
-					passed := true
-					buildGatePassed = &passed
-					break
-				}
-				slog.Warn("pipeline.buildgate.fail", "node", node.ID, "attempt", attempt, "output", truncate(checkOutput, 500))
-				_ = os.WriteFile(filepath.Join(stageDir, fmt.Sprintf("buildgate_attempt_%d.txt", attempt)), []byte(checkOutput), 0o644)
+			gate := runBuildGate(ctx, h.CheckRunner, h.Backend, node, pctx, checkCmd, prompt, stageDir)
+			buildGateAttempts = gate.Attempts
 
-				if attempt == maxAttempts {
-					fsDiff := captureFilesystemDiff()
-					failed := false
-					buildGatePassed = &failed
-					reason := fmt.Sprintf("build gate failed after %d attempts: %s", maxAttempts, truncate(checkOutput, 200))
-					slog.Error("pipeline.buildgate.exhausted", "node", node.ID, "attempts", maxAttempts)
-					outcome := Outcome{
-						Status:            StatusFail,
-						FailureReason:     reason,
-						Usage:             stageUsage,
-						PromptLength:      len(prompt),
-						ResponseLength:    len(responseText),
-						BuildGateAttempts: buildGateAttempts,
-						BuildGatePassed:   buildGatePassed,
-						FileDiffCounts:    fileDiffCounts(fsDiff),
-					}
-					writeStatus(stageDir, outcome)
-					return outcome
+			if gate.FailureReason != "" {
+				fsDiff := captureFilesystemDiff()
+				failed := false
+				buildGatePassed = &failed
+				stageUsage.Rounds += gate.ExtraRounds
+				stageUsage.InputTokens += gate.ExtraUsage.InputTokens
+				stageUsage.OutputTokens += gate.ExtraUsage.OutputTokens
+				stageUsage.TotalTokens += gate.ExtraUsage.TotalTokens
+				if gate.ResponseText != "" {
+					responseText = gate.ResponseText
 				}
-
-				fixPrompt := buildRetryPrompt(prompt, checkOutput)
-				fixResult, fixErr := h.Backend.Run(ctx, node, fixPrompt, pctx)
-				if fixErr != nil {
-					slog.Warn("pipeline.buildgate.fix.error", "node", node.ID, "error", fixErr)
-					fsDiff := captureFilesystemDiff()
-					failed := false
-					buildGatePassed = &failed
-					outcome := Outcome{
-						Status:            StatusFail,
-						FailureReason:     fmt.Sprintf("build gate fix attempt failed: %v", fixErr),
-						Usage:             stageUsage,
-						PromptLength:      len(prompt),
-						ResponseLength:    len(responseText),
-						BuildGateAttempts: buildGateAttempts,
-						BuildGatePassed:   buildGatePassed,
-						FileDiffCounts:    fileDiffCounts(fsDiff),
-					}
-					writeStatus(stageDir, outcome)
-					return outcome
+				outcome := Outcome{
+					Status:            StatusFail,
+					FailureReason:     gate.FailureReason,
+					Usage:             stageUsage,
+					ExhaustionReason:  gate.ExhaustionReason,
+					PromptLength:      len(prompt),
+					ResponseLength:    len(responseText),
+					BuildGateAttempts: buildGateAttempts,
+					BuildGatePassed:   buildGatePassed,
+					FileDiffCounts:    toFileDiffCounts(fsDiff),
 				}
+				writeStatus(stageDir, outcome)
+				return outcome
+			}
 
-				stageUsage.Rounds += fixResult.Rounds
-				stageUsage.InputTokens += fixResult.Usage.InputTokens
-				stageUsage.OutputTokens += fixResult.Usage.OutputTokens
-				stageUsage.TotalTokens += fixResult.Usage.TotalTokens
-				responseText = fixResult.Response
-
-				if fixResult.Exhausted {
-					fsDiff := captureFilesystemDiff()
-					failed := false
-					buildGatePassed = &failed
-					reason := fmt.Sprintf("agent exhausted during build gate fix (attempt %d)", attempt)
-					slog.Warn("pipeline.buildgate.fix.exhausted", "node", node.ID, "attempt", attempt)
-					outcome := Outcome{
-						Status:            StatusFail,
-						FailureReason:     reason,
-						Usage:             stageUsage,
-						ExhaustionReason:  result.ExhaustionReason,
-						PromptLength:      len(prompt),
-						ResponseLength:    len(responseText),
-						BuildGateAttempts: buildGateAttempts,
-						BuildGatePassed:   buildGatePassed,
-						FileDiffCounts:    fileDiffCounts(fsDiff),
-					}
-					writeStatus(stageDir, outcome)
-					return outcome
-				}
+			passed := true
+			buildGatePassed = &passed
+			stageUsage.Rounds += gate.ExtraRounds
+			stageUsage.InputTokens += gate.ExtraUsage.InputTokens
+			stageUsage.OutputTokens += gate.ExtraUsage.OutputTokens
+			stageUsage.TotalTokens += gate.ExtraUsage.TotalTokens
+			if gate.ResponseText != "" {
+				responseText = gate.ResponseText
 			}
 		}
 	} else {
@@ -383,12 +321,12 @@ func (h CodergenHandler) Execute(ctx context.Context, node *dot.Node, pctx *Cont
 			"completed_stages":         completedStages,
 			"stage_summary:" + node.ID: stageSummary,
 		},
-		PromptLength:          len(prompt),
-		ResponseLength:        len(responseText),
+		PromptLength:           len(prompt),
+		ResponseLength:         len(responseText),
 		ScratchSummaryProduced: scratchSummaryProduced,
-		BuildGateAttempts:     buildGateAttempts,
-		BuildGatePassed:       buildGatePassed,
-		FileDiffCounts:        fileDiffCounts(fsDiff),
+		BuildGateAttempts:      buildGateAttempts,
+		BuildGatePassed:        buildGatePassed,
+		FileDiffCounts:         toFileDiffCounts(fsDiff),
 	}
 	writeStatus(stageDir, outcome)
 	return outcome
@@ -528,6 +466,93 @@ func expandVariables(prompt string, g *dot.Graph, ctx *Context) string {
 	}
 
 	return prompt
+}
+
+// toFileDiffCounts converts a FileDiff pointer into a FileDiffCounts pointer
+// for inclusion in the Outcome.
+func toFileDiffCounts(fd *FileDiff) *FileDiffCounts {
+	if fd == nil {
+		return nil
+	}
+	return &FileDiffCounts{
+		Added:     len(fd.Added),
+		Modified:  len(fd.Modified),
+		Removed:   len(fd.Removed),
+		Unchanged: fd.Unchanged,
+	}
+}
+
+// buildGateResult carries the outcome of a build gate retry loop. The caller
+// uses this to accumulate usage and construct the appropriate Outcome.
+type buildGateResult struct {
+	Attempts         int
+	Passed           bool
+	ExtraUsage       llm.Usage
+	ExtraRounds      int
+	ResponseText     string // latest response from a fix run; empty when no fix ran
+	FailureReason    string // non-empty on terminal failure
+	ExhaustionReason string // non-empty when a fix run was exhausted
+}
+
+// runBuildGate executes the check_cmd and, on failure, retries by calling the
+// backend with a fix prompt up to the node's check_max_retries limit. It writes
+// check output artifacts to stageDir. The function has no knowledge of
+// filesystem snapshots or Outcome construction -- the caller handles those.
+func runBuildGate(
+	ctx context.Context,
+	runner CheckRunner,
+	backend CodergenBackend,
+	node *dot.Node,
+	pctx *Context,
+	checkCmd string,
+	originalPrompt string,
+	stageDir string,
+) buildGateResult {
+	maxAttempts := node.CheckMaxRetries()
+	var result buildGateResult
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		result.Attempts = attempt
+		slog.Info("pipeline.buildgate", "node", node.ID, "attempt", attempt, "cmd", checkCmd)
+		checkOutput, checkErr := runner(ctx, checkCmd)
+		if checkErr == nil {
+			slog.Info("pipeline.buildgate.pass", "node", node.ID, "attempt", attempt)
+			result.Passed = true
+			return result
+		}
+
+		slog.Warn("pipeline.buildgate.fail", "node", node.ID, "attempt", attempt, "output", truncate(checkOutput, 500))
+		_ = os.WriteFile(filepath.Join(stageDir, fmt.Sprintf("buildgate_attempt_%d.txt", attempt)), []byte(checkOutput), 0o644)
+
+		if attempt == maxAttempts {
+			result.FailureReason = fmt.Sprintf("build gate failed after %d attempts: %s", maxAttempts, truncate(checkOutput, 200))
+			slog.Error("pipeline.buildgate.exhausted", "node", node.ID, "attempts", maxAttempts)
+			return result
+		}
+
+		fixPrompt := buildRetryPrompt(originalPrompt, checkOutput)
+		fixResult, fixErr := backend.Run(ctx, node, fixPrompt, pctx)
+		if fixErr != nil {
+			slog.Warn("pipeline.buildgate.fix.error", "node", node.ID, "error", fixErr)
+			result.FailureReason = fmt.Sprintf("build gate fix attempt failed: %v", fixErr)
+			return result
+		}
+
+		result.ExtraRounds += fixResult.Rounds
+		result.ExtraUsage.InputTokens += fixResult.Usage.InputTokens
+		result.ExtraUsage.OutputTokens += fixResult.Usage.OutputTokens
+		result.ExtraUsage.TotalTokens += fixResult.Usage.TotalTokens
+		result.ResponseText = fixResult.Response
+
+		if fixResult.Exhausted {
+			slog.Warn("pipeline.buildgate.fix.exhausted", "node", node.ID, "attempt", attempt)
+			result.FailureReason = fmt.Sprintf("agent exhausted during build gate fix (attempt %d)", attempt)
+			result.ExhaustionReason = fixResult.ExhaustionReason
+			return result
+		}
+	}
+
+	return result
 }
 
 func truncate(s string, maxLen int) string {

@@ -1457,6 +1457,118 @@ func (b *diskOnlyBackend) Run(_ context.Context, node *dot.Node, _ string, _ *Co
 	}, nil
 }
 
+// --- Extracted function tests ---
+
+func TestToFileDiffCounts_Nil(t *testing.T) {
+	if got := toFileDiffCounts(nil); got != nil {
+		t.Errorf("toFileDiffCounts(nil) = %+v, want nil", got)
+	}
+}
+
+func TestToFileDiffCounts_NonNil(t *testing.T) {
+	fd := &FileDiff{
+		Added:     []FileEntry{{Path: "a.go", Size: 10}, {Path: "b.go", Size: 20}},
+		Modified:  []FileEntry{{Path: "c.go", Size: 30}},
+		Removed:   []string{},
+		Unchanged: 5,
+	}
+	got := toFileDiffCounts(fd)
+	if got == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if got.Added != 2 || got.Modified != 1 || got.Removed != 0 || got.Unchanged != 5 {
+		t.Errorf("got %+v, want {2 1 0 5}", got)
+	}
+}
+
+func TestRunBuildGate_PassFirstTry(t *testing.T) {
+	runner := func(_ context.Context, cmd string) (string, error) {
+		return "", nil
+	}
+	result := runBuildGate(context.Background(), runner, nil, &dot.Node{
+		ID:    "test",
+		Attrs: map[string]string{"check_max_retries": "3"},
+	}, nil, "go build ./...", "original prompt", t.TempDir())
+
+	if !result.Passed {
+		t.Error("expected gate to pass")
+	}
+	if result.Attempts != 1 {
+		t.Errorf("attempts = %d, want 1", result.Attempts)
+	}
+	if result.FailureReason != "" {
+		t.Errorf("unexpected failure reason: %q", result.FailureReason)
+	}
+}
+
+func TestRunBuildGate_FailThenFix(t *testing.T) {
+	checkAttempts := 0
+	runner := func(_ context.Context, cmd string) (string, error) {
+		checkAttempts++
+		if checkAttempts == 1 {
+			return "undefined: models.Team", fmt.Errorf("exit 1")
+		}
+		return "", nil
+	}
+	backend := &buildGateBackend{}
+	result := runBuildGate(context.Background(), runner, backend, &dot.Node{
+		ID:    "fixable",
+		Attrs: map[string]string{"check_max_retries": "3"},
+	}, NewContext(), "go build ./...", "original prompt", t.TempDir())
+
+	if !result.Passed {
+		t.Error("expected gate to pass after fix")
+	}
+	if result.Attempts != 2 {
+		t.Errorf("attempts = %d, want 2", result.Attempts)
+	}
+	if result.ExtraUsage.TotalTokens != 1200 {
+		t.Errorf("extra usage = %d, want 1200 (one fix run)", result.ExtraUsage.TotalTokens)
+	}
+	if result.ExtraRounds != 3 {
+		t.Errorf("extra rounds = %d, want 3", result.ExtraRounds)
+	}
+}
+
+func TestRunBuildGate_Exhausted(t *testing.T) {
+	runner := func(_ context.Context, cmd string) (string, error) {
+		return "always fails", fmt.Errorf("exit 1")
+	}
+	backend := &buildGateBackend{}
+	result := runBuildGate(context.Background(), runner, backend, &dot.Node{
+		ID:    "unfixable",
+		Attrs: map[string]string{"check_max_retries": "2"},
+	}, NewContext(), "go build ./...", "original prompt", t.TempDir())
+
+	if result.Passed {
+		t.Error("expected gate to fail")
+	}
+	if result.FailureReason == "" {
+		t.Error("expected non-empty failure reason")
+	}
+	if !strings.Contains(result.FailureReason, "build gate failed") {
+		t.Errorf("failure reason = %q, want mention of 'build gate failed'", result.FailureReason)
+	}
+}
+
+func TestRunBuildGate_FixBackendError(t *testing.T) {
+	runner := func(_ context.Context, cmd string) (string, error) {
+		return "check failed", fmt.Errorf("exit 1")
+	}
+	backend := failingBackend{msg: "LLM down"}
+	result := runBuildGate(context.Background(), runner, backend, &dot.Node{
+		ID:    "broken",
+		Attrs: map[string]string{"check_max_retries": "3"},
+	}, NewContext(), "go build ./...", "original prompt", t.TempDir())
+
+	if result.Passed {
+		t.Error("expected gate to fail when backend errors")
+	}
+	if !strings.Contains(result.FailureReason, "fix attempt failed") {
+		t.Errorf("failure reason = %q, want mention of 'fix attempt failed'", result.FailureReason)
+	}
+}
+
 func TestCodergenHandler_ContextCarryover(t *testing.T) {
 	logsRoot := t.TempDir()
 	g := &dot.Graph{Attrs: map[string]string{"goal": "build an app"}}
