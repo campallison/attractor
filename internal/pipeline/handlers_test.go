@@ -557,10 +557,10 @@ func TestCodergenHandler_BuildGateExhausted(t *testing.T) {
 		},
 	}
 	node := &dot.Node{ID: "unfixable", Attrs: map[string]string{
-		"shape":              "box",
-		"prompt":             "Build something",
-		"check_cmd":          "go build ./...",
-		"check_max_retries":  "2",
+		"shape":             "box",
+		"prompt":            "Build something",
+		"check_cmd":         "go build ./...",
+		"check_max_retries": "2",
 	}}
 	g := &dot.Graph{Attrs: map[string]string{}}
 
@@ -918,10 +918,10 @@ func TestBuildStageSummary(t *testing.T) {
 			},
 		},
 		{
-			name:     "with filesystem diff",
-			nodeID:   "scaffold",
-			files:    []string{"main.go"},
-			response: "Done.",
+			name:      "with filesystem diff",
+			nodeID:    "scaffold",
+			files:     []string{"main.go"},
+			response:  "Done.",
 			fsDiffStr: "Added (2):\n  + main.go (100 bytes)\n  + internal/server.go (250 bytes)",
 			checks: func(t *testing.T, got string) {
 				if !strings.Contains(got, "Filesystem changes:") {
@@ -1566,6 +1566,50 @@ func TestRunBuildGate_FixBackendError(t *testing.T) {
 	}
 	if !strings.Contains(result.FailureReason, "fix attempt failed") {
 		t.Errorf("failure reason = %q, want mention of 'fix attempt failed'", result.FailureReason)
+	}
+}
+
+func TestCaptureFilesystemDiff_WithChanges(t *testing.T) {
+	workDir := t.TempDir()
+	stageDir := t.TempDir()
+
+	writeFile(t, workDir, "existing.go", "package main")
+	beforeSnap, err := SnapshotDir(workDir)
+	if err != nil {
+		t.Fatalf("snapshot failed: %v", err)
+	}
+
+	writeFile(t, workDir, "new.go", "package new")
+
+	diff := captureFilesystemDiff(workDir, beforeSnap, "test_node", stageDir)
+	if diff == nil {
+		t.Fatal("expected non-nil diff")
+	}
+	if len(diff.Added) != 1 {
+		t.Errorf("expected 1 added file, got %d", len(diff.Added))
+	}
+
+	diffPath := filepath.Join(stageDir, "filesystem_diff.txt")
+	data, err := os.ReadFile(diffPath)
+	if err != nil {
+		t.Fatalf("filesystem_diff.txt should be written: %v", err)
+	}
+	if !strings.Contains(string(data), "new.go") {
+		t.Error("diff file should mention new.go")
+	}
+}
+
+func TestCaptureFilesystemDiff_EmptyWorkDir(t *testing.T) {
+	diff := captureFilesystemDiff("", nil, "node", t.TempDir())
+	if diff != nil {
+		t.Error("expected nil diff when workDir is empty")
+	}
+}
+
+func TestCaptureFilesystemDiff_NilSnapshot(t *testing.T) {
+	diff := captureFilesystemDiff("/some/dir", nil, "node", t.TempDir())
+	if diff != nil {
+		t.Error("expected nil diff when beforeSnap is nil")
 	}
 }
 
