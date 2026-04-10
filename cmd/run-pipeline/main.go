@@ -363,32 +363,18 @@ func run() int {
 
 	if len(result.StageUsages) > 0 {
 		fmt.Println()
-		fmt.Printf("%-20s %8s %8s %8s %6s  %s\n", "Stage", "Input", "Output", "Total", "Rounds", "Model")
-		fmt.Println("-------------------- -------- -------- -------- ------  -----")
-		for _, nodeID := range result.CompletedNodes {
-			if su, ok := result.StageUsages[nodeID]; ok {
-				fmt.Printf("%-20s %8d %8d %8d %6d  %s\n",
-					truncate(nodeID, 20), su.InputTokens, su.OutputTokens, su.TotalTokens, su.Rounds, su.Model)
-			}
-		}
+		fmt.Print(formatUsageTable(result.CompletedNodes, result.StageUsages))
 	}
 
 	// 8. Write summary JSON
 	summaryPath := filepath.Join(logsRoot, "summary.json")
-	summaryData := map[string]any{
-		"status":          string(result.Status),
-		"completed_nodes": result.CompletedNodes,
-		"failure_reason":  result.FailureReason,
-		"warnings":        result.Warnings,
-		"total_usage":     result.TotalUsage,
-		"stage_usages":    result.StageUsages,
-		"elapsed_seconds": elapsed.Seconds(),
-		"model":           effectiveModel,
-		"model_override":  *modelOverride != "",
-		"zdr":             *zdr,
-		"prompt_cache":    *promptCache,
-		"budget_tokens":   *budgetTokens,
-	}
+	summaryData := buildSummaryJSON(result, elapsed, summaryConfig{
+		EffectiveModel: effectiveModel,
+		ModelOverride:  *modelOverride != "",
+		ZDR:            *zdr,
+		PromptCache:    *promptCache,
+		BudgetTokens:   *budgetTokens,
+	})
 	if data, err := json.MarshalIndent(summaryData, "", "  "); err == nil {
 		_ = os.WriteFile(summaryPath, data, 0o644)
 		fmt.Printf("\nSummary written to %s\n", summaryPath)
@@ -527,7 +513,7 @@ func runPreflight(g *dot.Graph, workDir, model, modelOverride string, budgetToke
 		} else {
 			allModels = collectModelIDs(g, model)
 		}
-		knownModels, apiErr := fetchOpenRouterModels()
+		knownModels, apiErr := fetchOpenRouterModels(http.DefaultClient, "https://openrouter.ai/api/v1", os.Getenv("OPENROUTER_API_KEY"))
 		if apiErr != nil {
 			// API unreachable -- fall back to format check.
 			var badFormat []string
@@ -630,6 +616,50 @@ func sandboxName(runID uuid.UUID) string {
 	return "attractor-" + hexID[:8]
 }
 
+// summaryConfig holds the configuration values needed to build the summary JSON.
+// Extracted from run() so the summary can be constructed and tested independently.
+type summaryConfig struct {
+	EffectiveModel string
+	ModelOverride  bool
+	ZDR            bool
+	PromptCache    bool
+	BudgetTokens   int
+}
+
+// buildSummaryJSON constructs the summary data map written to summary.json.
+// Pure function: takes result + config, returns a map.
+func buildSummaryJSON(result pipeline.RunResult, elapsed time.Duration, cfg summaryConfig) map[string]any {
+	return map[string]any{
+		"status":          string(result.Status),
+		"completed_nodes": result.CompletedNodes,
+		"failure_reason":  result.FailureReason,
+		"warnings":        result.Warnings,
+		"total_usage":     result.TotalUsage,
+		"stage_usages":    result.StageUsages,
+		"elapsed_seconds": elapsed.Seconds(),
+		"model":           cfg.EffectiveModel,
+		"model_override":  cfg.ModelOverride,
+		"zdr":             cfg.ZDR,
+		"prompt_cache":    cfg.PromptCache,
+		"budget_tokens":   cfg.BudgetTokens,
+	}
+}
+
+// formatUsageTable returns a formatted table of per-stage token usage.
+// Rows follow the order of completedNodes, not map iteration order.
+func formatUsageTable(completedNodes []string, stageUsages map[string]*pipeline.StageUsage) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%-20s %8s %8s %8s %6s  %s\n", "Stage", "Input", "Output", "Total", "Rounds", "Model")
+	b.WriteString("-------------------- -------- -------- -------- ------  -----\n")
+	for _, nodeID := range completedNodes {
+		if su, ok := stageUsages[nodeID]; ok {
+			fmt.Fprintf(&b, "%-20s %8d %8d %8d %6d  %s\n",
+				truncate(nodeID, 20), su.InputTokens, su.OutputTokens, su.TotalTokens, su.Rounds, su.Model)
+		}
+	}
+	return b.String()
+}
+
 func makeCheckRunner(containerName string) pipeline.CheckRunner {
 	return func(ctx context.Context, cmd string) (string, error) {
 		checkCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
@@ -640,20 +670,22 @@ func makeCheckRunner(containerName string) pipeline.CheckRunner {
 	}
 }
 
-func fetchOpenRouterModels() (map[string]bool, error) {
+// fetchOpenRouterModels queries the OpenRouter API for available model IDs.
+// Dependencies (HTTP client, base URL, API key) are passed as parameters so the
+// function is testable without real network calls or environment variables.
+func fetchOpenRouterModels(httpClient *http.Client, baseURL, apiKey string) (map[string]bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://openrouter.ai/api/v1/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models", nil)
 	if err != nil {
 		return nil, err
 	}
-	apiKey := os.Getenv("OPENROUTER_API_KEY")
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
