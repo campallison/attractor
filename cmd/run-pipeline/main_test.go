@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -286,6 +288,169 @@ func TestPreflightChecksToResult_AllPass(t *testing.T) {
 	}
 	if len(result.warnings) != 0 {
 		t.Errorf("expected no warnings, got: %v", result.warnings)
+	}
+}
+
+// --- Sandbox lifecycle tests ---
+
+func TestSetupSandbox_Success(t *testing.T) {
+	var callOrder []string
+	ops := sandboxOps{
+		EnsureContainer: func(image, name, workDir string) error {
+			callOrder = append(callOrder, "ensure")
+			return nil
+		},
+		StopContainer: func(name string) error {
+			callOrder = append(callOrder, "stop")
+			return nil
+		},
+		ProvisionCheckTools: func(ctx context.Context, root, container string) map[string]error {
+			callOrder = append(callOrder, "provision")
+			return nil
+		},
+	}
+	result, err := setupSandbox(context.Background(), sandboxConfig{
+		Image:         "test-image",
+		WorkDir:       t.TempDir(),
+		ContainerName: "test-container",
+	}, ops)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Cleanup == nil {
+		t.Fatal("expected non-nil cleanup")
+	}
+	if len(callOrder) != 2 {
+		t.Fatalf("expected ensure + provision, got: %v", callOrder)
+	}
+
+	result.Cleanup()
+	if callOrder[len(callOrder)-1] != "stop" {
+		t.Errorf("expected stop as last call, got: %v", callOrder)
+	}
+}
+
+func TestSetupSandbox_WithCompanionDB(t *testing.T) {
+	var callOrder []string
+	ops := sandboxOps{
+		EnsureContainer: func(image, name, workDir string) error {
+			callOrder = append(callOrder, "ensure")
+			return nil
+		},
+		StopContainer: func(name string) error {
+			callOrder = append(callOrder, "stop")
+			return nil
+		},
+		ProvisionCheckTools: func(ctx context.Context, root, container string) map[string]error {
+			return nil
+		},
+		SetupCompanionDB: func(ctx context.Context, network, dbName, mainContainer string) error {
+			callOrder = append(callOrder, "setup-db")
+			return nil
+		},
+		TeardownCompanionDB: func(ctx context.Context, network, dbName, mainContainer string) error {
+			callOrder = append(callOrder, "teardown-db")
+			return nil
+		},
+	}
+	result, err := setupSandbox(context.Background(), sandboxConfig{
+		Image:         "test-image",
+		WorkDir:       t.TempDir(),
+		ContainerName: "test-container",
+		CompanionDB:   true,
+	}, ops)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	result.Cleanup()
+
+	// Companion DB must tear down BEFORE the container stops.
+	teardownIdx := -1
+	stopIdx := -1
+	for i, c := range callOrder {
+		if c == "teardown-db" {
+			teardownIdx = i
+		}
+		if c == "stop" {
+			stopIdx = i
+		}
+	}
+	if teardownIdx < 0 || stopIdx < 0 {
+		t.Fatalf("expected both teardown-db and stop, got: %v", callOrder)
+	}
+	if teardownIdx > stopIdx {
+		t.Errorf("teardown-db must come before stop, got: %v", callOrder)
+	}
+}
+
+func TestSetupSandbox_EnsureContainerError(t *testing.T) {
+	ops := sandboxOps{
+		EnsureContainer: func(image, name, workDir string) error {
+			return fmt.Errorf("docker not running")
+		},
+	}
+	_, err := setupSandbox(context.Background(), sandboxConfig{
+		Image:         "test-image",
+		WorkDir:       t.TempDir(),
+		ContainerName: "test-container",
+	}, ops)
+	if err == nil {
+		t.Fatal("expected error when container fails to start")
+	}
+	if !strings.Contains(err.Error(), "docker not running") {
+		t.Errorf("error = %q, want mention of 'docker not running'", err.Error())
+	}
+}
+
+func TestSetupSandbox_CompanionDBError_CleansUpContainer(t *testing.T) {
+	var callOrder []string
+	ops := sandboxOps{
+		EnsureContainer: func(image, name, workDir string) error {
+			callOrder = append(callOrder, "ensure")
+			return nil
+		},
+		StopContainer: func(name string) error {
+			callOrder = append(callOrder, "stop")
+			return nil
+		},
+		ProvisionCheckTools: func(ctx context.Context, root, container string) map[string]error {
+			return nil
+		},
+		SetupCompanionDB: func(ctx context.Context, network, dbName, mainContainer string) error {
+			return fmt.Errorf("db start failed")
+		},
+		TeardownCompanionDB: func(ctx context.Context, network, dbName, mainContainer string) error {
+			callOrder = append(callOrder, "teardown-db")
+			return nil
+		},
+	}
+	_, err := setupSandbox(context.Background(), sandboxConfig{
+		Image:         "test-image",
+		WorkDir:       t.TempDir(),
+		ContainerName: "test-container",
+		CompanionDB:   true,
+	}, ops)
+	if err == nil {
+		t.Fatal("expected error when companion DB fails")
+	}
+
+	// On companion DB failure, both DB teardown and container stop should be called.
+	hasStop := false
+	hasTeardown := false
+	for _, c := range callOrder {
+		if c == "stop" {
+			hasStop = true
+		}
+		if c == "teardown-db" {
+			hasTeardown = true
+		}
+	}
+	if !hasStop {
+		t.Error("expected container to be stopped on companion DB failure")
+	}
+	if !hasTeardown {
+		t.Error("expected companion DB teardown attempt on failure")
 	}
 }
 

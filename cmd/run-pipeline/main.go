@@ -222,50 +222,23 @@ func run() int {
 		if *noDocker {
 			fmt.Println("    Docker: DISABLED (shell commands will fail)")
 		} else {
-			fmt.Printf("    Docker: starting container %s with image %s...\n", containerName, *dockerImage)
-			if err := tools.EnsureContainer(*dockerImage, containerName, *workDir); err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to start Docker sandbox: %v\n", err)
+			sandbox, err := setupSandbox(ctx, sandboxConfig{
+				Image:         *dockerImage,
+				WorkDir:       *workDir,
+				ContainerName: containerName,
+				CompanionDB:   *companionDB,
+			}, sandboxOps{
+				EnsureContainer:     tools.EnsureContainer,
+				StopContainer:       tools.StopContainer,
+				ProvisionCheckTools: tools.ProvisionCheckTools,
+				SetupCompanionDB:    tools.SetupCompanionDB,
+				TeardownCompanionDB: tools.TeardownCompanionDB,
+			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%v\n", err)
 				return 1
 			}
-			defer func() {
-				fmt.Printf("Stopping Docker sandbox %s...\n", containerName)
-				if err := tools.StopContainer(containerName); err != nil {
-					fmt.Printf("Warning: failed to stop container: %v\n", err)
-				}
-			}()
-			fmt.Printf("    Docker: container %s running\n", containerName)
-
-			attractorRoot, err := os.Getwd()
-			if err != nil {
-				fmt.Printf("    Check tools: not provisioned (cannot determine working directory: %v)\n", err)
-			} else {
-				results := tools.ProvisionCheckTools(ctx, attractorRoot, containerName)
-				for name, err := range results {
-					if err != nil {
-						fmt.Printf("    Check tools: %s not provisioned (%v)\n", name, err)
-					} else {
-						fmt.Printf("    Check tools: %s provisioned\n", name)
-					}
-				}
-			}
-
-			if *companionDB {
-				networkName := containerName + "-net"
-				dbContainerName := containerName + "-db"
-				fmt.Printf("    Companion DB: starting %s...\n", dbContainerName)
-				if err := tools.SetupCompanionDB(ctx, networkName, dbContainerName, containerName); err != nil {
-					_ = tools.TeardownCompanionDB(ctx, networkName, dbContainerName, containerName)
-					fmt.Fprintf(os.Stderr, "Failed to set up companion database: %v\n", err)
-					return 1
-				}
-				defer func() {
-					fmt.Printf("Stopping companion DB %s...\n", dbContainerName)
-					if err := tools.TeardownCompanionDB(ctx, networkName, dbContainerName, containerName); err != nil {
-						fmt.Printf("Warning: failed to tear down companion DB: %v\n", err)
-					}
-				}()
-				fmt.Printf("    Companion DB: ready (DATABASE_URL written to sandbox)\n")
-			}
+			defer sandbox.Cleanup()
 		}
 
 		toolRegistry := tools.DefaultRegistry(containerName)
@@ -719,6 +692,90 @@ func formatUsageTable(completedNodes []string, stageUsages map[string]*pipeline.
 		}
 	}
 	return b.String()
+}
+
+// sandboxConfig holds the parameters for Docker sandbox setup.
+type sandboxConfig struct {
+	Image         string
+	WorkDir       string
+	ContainerName string
+	CompanionDB   bool
+}
+
+// sandboxOps holds the Docker operations, injected for testability.
+type sandboxOps struct {
+	EnsureContainer     func(image, name, workDir string) error
+	StopContainer       func(name string) error
+	ProvisionCheckTools func(ctx context.Context, root, container string) map[string]error
+	SetupCompanionDB    func(ctx context.Context, network, dbName, mainContainer string) error
+	TeardownCompanionDB func(ctx context.Context, network, dbName, mainContainer string) error
+}
+
+// sandboxResult carries the cleanup function that tears down all sandbox
+// resources in the correct order (companion DB before container).
+type sandboxResult struct {
+	Cleanup func()
+}
+
+// setupSandbox starts the Docker container, provisions check tools, and
+// optionally sets up a companion database. Returns a Cleanup function that
+// tears down resources in reverse order. On error, any partially created
+// resources are cleaned up before returning.
+func setupSandbox(ctx context.Context, cfg sandboxConfig, ops sandboxOps) (sandboxResult, error) {
+	noop := sandboxResult{Cleanup: func() {}}
+
+	fmt.Printf("    Docker: starting container %s with image %s...\n", cfg.ContainerName, cfg.Image)
+	if err := ops.EnsureContainer(cfg.Image, cfg.ContainerName, cfg.WorkDir); err != nil {
+		return noop, fmt.Errorf("failed to start Docker sandbox: %w", err)
+	}
+	fmt.Printf("    Docker: container %s running\n", cfg.ContainerName)
+
+	if ops.ProvisionCheckTools != nil {
+		attractorRoot, err := os.Getwd()
+		if err != nil {
+			fmt.Printf("    Check tools: not provisioned (cannot determine working directory: %v)\n", err)
+		} else {
+			results := ops.ProvisionCheckTools(ctx, attractorRoot, cfg.ContainerName)
+			for name, err := range results {
+				if err != nil {
+					fmt.Printf("    Check tools: %s not provisioned (%v)\n", name, err)
+				} else {
+					fmt.Printf("    Check tools: %s provisioned\n", name)
+				}
+			}
+		}
+	}
+
+	stopContainer := func() {
+		fmt.Printf("Stopping Docker sandbox %s...\n", cfg.ContainerName)
+		if err := ops.StopContainer(cfg.ContainerName); err != nil {
+			fmt.Printf("Warning: failed to stop container: %v\n", err)
+		}
+	}
+
+	if !cfg.CompanionDB {
+		return sandboxResult{Cleanup: stopContainer}, nil
+	}
+
+	networkName := cfg.ContainerName + "-net"
+	dbContainerName := cfg.ContainerName + "-db"
+	fmt.Printf("    Companion DB: starting %s...\n", dbContainerName)
+	if err := ops.SetupCompanionDB(ctx, networkName, dbContainerName, cfg.ContainerName); err != nil {
+		_ = ops.TeardownCompanionDB(ctx, networkName, dbContainerName, cfg.ContainerName)
+		stopContainer()
+		return noop, fmt.Errorf("failed to set up companion database: %w", err)
+	}
+	fmt.Printf("    Companion DB: ready (DATABASE_URL written to sandbox)\n")
+
+	return sandboxResult{
+		Cleanup: func() {
+			fmt.Printf("Stopping companion DB %s...\n", dbContainerName)
+			if err := ops.TeardownCompanionDB(ctx, networkName, dbContainerName, cfg.ContainerName); err != nil {
+				fmt.Printf("Warning: failed to tear down companion DB: %v\n", err)
+			}
+			stopContainer()
+		},
+	}, nil
 }
 
 func makeCheckRunner(containerName string) pipeline.CheckRunner {
