@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/campallison/attractor/internal/dot"
 	"github.com/campallison/attractor/internal/pipeline"
 	"github.com/google/uuid"
 )
@@ -135,6 +136,156 @@ func TestFormatUsageTable_Empty(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(got), "\n")
 	if len(lines) != 2 {
 		t.Errorf("expected 2 header lines, got %d", len(lines))
+	}
+}
+
+// --- Preflight evaluation tests ---
+
+func TestEvaluatePreflight_SimulateMode(t *testing.T) {
+	g := &dot.Graph{Attrs: map[string]string{}}
+	cfg := preflightConfig{
+		Graph:    g,
+		WorkDir:  t.TempDir(),
+		Model:    "test/model",
+		Simulate: true,
+	}
+	checks := evaluatePreflight(cfg)
+
+	skipCount := 0
+	for _, c := range checks {
+		if c.Status == checkFail {
+			t.Errorf("unexpected failure: %s: %s", c.Name, c.Detail)
+		}
+		if c.Status == checkSkip {
+			skipCount++
+		}
+	}
+	if skipCount < 2 {
+		t.Errorf("simulate mode should skip at least API key and Docker checks, got %d skips", skipCount)
+	}
+}
+
+func TestEvaluatePreflight_MissingAPIKey(t *testing.T) {
+	g := &dot.Graph{Attrs: map[string]string{}}
+	cfg := preflightConfig{
+		Graph:    g,
+		WorkDir:  t.TempDir(),
+		Model:    "test/model",
+		Simulate: false,
+		NoDocker: true,
+		APIKey:   "",
+	}
+	checks := evaluatePreflight(cfg)
+
+	found := false
+	for _, c := range checks {
+		if c.Name == "api_key" {
+			found = true
+			if c.Status != checkFail {
+				t.Errorf("api_key status = %q, want %q", c.Status, checkFail)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected api_key check in results")
+	}
+}
+
+func TestEvaluatePreflight_BadAPIKeyFormat(t *testing.T) {
+	g := &dot.Graph{Attrs: map[string]string{}}
+	cfg := preflightConfig{
+		Graph:    g,
+		WorkDir:  t.TempDir(),
+		Model:    "test/model",
+		Simulate: false,
+		NoDocker: true,
+		APIKey:   "bad-prefix-key",
+	}
+	checks := evaluatePreflight(cfg)
+
+	for _, c := range checks {
+		if c.Name == "api_key" && c.Status != checkFail {
+			t.Errorf("api_key status = %q, want %q for bad format", c.Status, checkFail)
+		}
+	}
+}
+
+func TestEvaluatePreflight_ValidAPIKey(t *testing.T) {
+	g := &dot.Graph{Attrs: map[string]string{}}
+	cfg := preflightConfig{
+		Graph:    g,
+		WorkDir:  t.TempDir(),
+		Model:    "test/model",
+		Simulate: false,
+		NoDocker: true,
+		APIKey:   "sk-or-valid-key",
+	}
+	checks := evaluatePreflight(cfg)
+
+	for _, c := range checks {
+		if c.Name == "api_key" && c.Status != checkPass {
+			t.Errorf("api_key status = %q, want %q", c.Status, checkPass)
+		}
+	}
+}
+
+func TestEvaluatePreflight_LowBudgetWarning(t *testing.T) {
+	g := &dot.Graph{
+		Attrs: map[string]string{},
+		Nodes: []*dot.Node{
+			{ID: "a", Attrs: map[string]string{"shape": "box"}},
+			{ID: "b", Attrs: map[string]string{"shape": "box"}},
+		},
+	}
+	cfg := preflightConfig{
+		Graph:        g,
+		WorkDir:      t.TempDir(),
+		Model:        "test/model",
+		Simulate:     true,
+		BudgetTokens: 50_000,
+	}
+	checks := evaluatePreflight(cfg)
+
+	found := false
+	for _, c := range checks {
+		if c.Name == "budget" {
+			found = true
+			if c.Status != checkWarn {
+				t.Errorf("budget status = %q, want %q for low budget", c.Status, checkWarn)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected budget check in results")
+	}
+}
+
+func TestPreflightChecksToResult_WithFailures(t *testing.T) {
+	checks := []preflightCheck{
+		{Name: "work_dir", Status: checkPass, Detail: "exists and is writable"},
+		{Name: "api_key", Status: checkFail, Detail: "not set"},
+		{Name: "budget", Status: checkWarn, Detail: "very low"},
+	}
+	result := preflightChecksToResult(checks)
+	if result.err == nil {
+		t.Error("expected error when checks contain failures")
+	}
+	if len(result.warnings) != 1 || !strings.Contains(result.warnings[0], "very low") {
+		t.Errorf("warnings = %v, want 1 warning about 'very low'", result.warnings)
+	}
+}
+
+func TestPreflightChecksToResult_AllPass(t *testing.T) {
+	checks := []preflightCheck{
+		{Name: "work_dir", Status: checkPass, Detail: "ok"},
+		{Name: "api_key", Status: checkPass, Detail: "ok"},
+	}
+	result := preflightChecksToResult(checks)
+	if result.err != nil {
+		t.Errorf("expected nil error, got: %v", result.err)
+	}
+	if len(result.warnings) != 0 {
+		t.Errorf("expected no warnings, got: %v", result.warnings)
 	}
 }
 

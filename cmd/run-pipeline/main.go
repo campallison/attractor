@@ -114,7 +114,18 @@ func run() int {
 
 	// 3. Pre-flight checks
 	fmt.Println("[3] Pre-flight checks...")
-	pfResult := runPreflight(g, *workDir, *model, *modelOverride, *budgetTokens, *simulate, *noDocker)
+	pfChecks := evaluatePreflight(preflightConfig{
+		Graph:         g,
+		WorkDir:       *workDir,
+		Model:         *model,
+		ModelOverride: *modelOverride,
+		BudgetTokens:  *budgetTokens,
+		Simulate:      *simulate,
+		NoDocker:      *noDocker,
+		APIKey:        os.Getenv("OPENROUTER_API_KEY"),
+	})
+	printPreflightChecks(pfChecks)
+	pfResult := preflightChecksToResult(pfChecks)
 	for _, w := range pfResult.warnings {
 		fmt.Printf("    (warning: %s)\n", w)
 	}
@@ -447,76 +458,94 @@ type preflightResult struct {
 	err      error
 }
 
-func runPreflight(g *dot.Graph, workDir, model, modelOverride string, budgetTokens int, simulate, noDocker bool) preflightResult {
-	var warnings []string
-	var failures []string
+type checkStatus string
+
+const (
+	checkPass checkStatus = "pass"
+	checkFail checkStatus = "fail"
+	checkSkip checkStatus = "skip"
+	checkWarn checkStatus = "warn"
+)
+
+type preflightCheck struct {
+	Name   string
+	Status checkStatus
+	Detail string
+}
+
+type preflightConfig struct {
+	Graph         *dot.Graph
+	WorkDir       string
+	Model         string
+	ModelOverride string
+	BudgetTokens  int
+	Simulate      bool
+	NoDocker      bool
+	APIKey        string
+}
+
+// evaluatePreflight runs all preflight validations and returns structured
+// results with no printing. The caller is responsible for presentation.
+func evaluatePreflight(cfg preflightConfig) []preflightCheck {
+	var checks []preflightCheck
 
 	// 1. Work directory exists and is writable.
-	info, err := os.Stat(workDir)
+	info, err := os.Stat(cfg.WorkDir)
 	if err != nil {
-		fmt.Printf("    [FAIL] Work directory: %s does not exist\n", workDir)
-		failures = append(failures, fmt.Sprintf("work directory %q does not exist", workDir))
+		checks = append(checks, preflightCheck{"work_dir", checkFail, fmt.Sprintf("work directory %q does not exist", cfg.WorkDir)})
 	} else if !info.IsDir() {
-		fmt.Printf("    [FAIL] Work directory: %s is not a directory\n", workDir)
-		failures = append(failures, fmt.Sprintf("%q is not a directory", workDir))
+		checks = append(checks, preflightCheck{"work_dir", checkFail, fmt.Sprintf("%q is not a directory", cfg.WorkDir)})
 	} else {
-		tmp := filepath.Join(workDir, ".attractor-preflight-check")
+		tmp := filepath.Join(cfg.WorkDir, ".attractor-preflight-check")
 		if err := os.WriteFile(tmp, []byte("ok"), 0o644); err != nil {
-			fmt.Printf("    [FAIL] Work directory: %s is not writable\n", workDir)
-			failures = append(failures, fmt.Sprintf("work directory %q is not writable: %v", workDir, err))
+			checks = append(checks, preflightCheck{"work_dir", checkFail, fmt.Sprintf("work directory %q is not writable: %v", cfg.WorkDir, err)})
 		} else {
 			_ = os.Remove(tmp)
-			fmt.Printf("    [ok] Work directory exists and is writable\n")
+			checks = append(checks, preflightCheck{"work_dir", checkPass, "exists and is writable"})
 		}
 	}
 
 	// 2. API key is present and well-formed.
-	if simulate {
-		fmt.Printf("    [--] API key (skipped: simulate mode)\n")
+	if cfg.Simulate {
+		checks = append(checks, preflightCheck{"api_key", checkSkip, "simulate mode"})
+	} else if cfg.APIKey == "" {
+		checks = append(checks, preflightCheck{"api_key", checkFail, "OPENROUTER_API_KEY environment variable is not set"})
+	} else if !strings.HasPrefix(cfg.APIKey, "sk-or-") {
+		checks = append(checks, preflightCheck{"api_key", checkFail,
+			fmt.Sprintf("OPENROUTER_API_KEY does not start with \"sk-or-\" -- check for stray quotes or wrong key (got %q...)", truncate(cfg.APIKey, 10))})
 	} else {
-		apiKey := os.Getenv("OPENROUTER_API_KEY")
-		if apiKey == "" {
-			fmt.Printf("    [FAIL] API key: OPENROUTER_API_KEY is not set\n")
-			failures = append(failures, "OPENROUTER_API_KEY environment variable is not set")
-		} else if !strings.HasPrefix(apiKey, "sk-or-") {
-			fmt.Printf("    [FAIL] API key: does not start with sk-or- (got %q...)\n", truncate(apiKey, 10))
-			failures = append(failures, "OPENROUTER_API_KEY does not start with \"sk-or-\" -- check for stray quotes or wrong key")
-		} else {
-			fmt.Printf("    [ok] API key present and well-formed\n")
-		}
+		checks = append(checks, preflightCheck{"api_key", checkPass, "present and well-formed"})
 	}
 
 	// 3. Docker daemon is reachable.
-	if simulate || noDocker {
+	if cfg.Simulate || cfg.NoDocker {
 		reason := "simulate mode"
-		if noDocker {
+		if cfg.NoDocker {
 			reason = "--no-docker"
 		}
-		fmt.Printf("    [--] Docker daemon (skipped: %s)\n", reason)
+		checks = append(checks, preflightCheck{"docker", checkSkip, reason})
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := exec.CommandContext(ctx, "docker", "info").Run(); err != nil {
-			fmt.Printf("    [FAIL] Docker daemon is not reachable\n")
-			failures = append(failures, "Docker daemon is not reachable -- is Docker Desktop running?")
+			checks = append(checks, preflightCheck{"docker", checkFail, "Docker daemon is not reachable -- is Docker Desktop running?"})
 		} else {
-			fmt.Printf("    [ok] Docker daemon is reachable\n")
+			checks = append(checks, preflightCheck{"docker", checkPass, "Docker daemon is reachable"})
 		}
 	}
 
-	// 4. Model IDs exist on OpenRouter (falls back to format check if API unreachable).
-	if simulate {
-		fmt.Printf("    [--] Model validation (skipped: simulate mode)\n")
+	// 4. Model IDs exist on OpenRouter.
+	if cfg.Simulate {
+		checks = append(checks, preflightCheck{"models", checkSkip, "simulate mode"})
 	} else {
 		var allModels []string
-		if modelOverride != "" {
-			allModels = []string{modelOverride}
+		if cfg.ModelOverride != "" {
+			allModels = []string{cfg.ModelOverride}
 		} else {
-			allModels = collectModelIDs(g, model)
+			allModels = collectModelIDs(cfg.Graph, cfg.Model)
 		}
-		knownModels, apiErr := fetchOpenRouterModels(http.DefaultClient, "https://openrouter.ai/api/v1", os.Getenv("OPENROUTER_API_KEY"))
+		knownModels, apiErr := fetchOpenRouterModels(http.DefaultClient, "https://openrouter.ai/api/v1", cfg.APIKey)
 		if apiErr != nil {
-			// API unreachable -- fall back to format check.
 			var badFormat []string
 			for _, m := range allModels {
 				if !strings.Contains(m, "/") {
@@ -524,12 +553,11 @@ func runPreflight(g *dot.Graph, workDir, model, modelOverride string, budgetToke
 				}
 			}
 			if len(badFormat) > 0 {
-				fmt.Printf("    [FAIL] Model IDs: invalid format (missing provider/ prefix): %s\n", strings.Join(badFormat, ", "))
-				failures = append(failures, fmt.Sprintf("model IDs missing provider/ prefix: %s", strings.Join(badFormat, ", ")))
+				checks = append(checks, preflightCheck{"models", checkFail,
+					fmt.Sprintf("model IDs missing provider/ prefix: %s", strings.Join(badFormat, ", "))})
 			} else {
-				w := fmt.Sprintf("Could not reach OpenRouter to validate models (%v); format check passed", apiErr)
-				fmt.Printf("    [!!] %s\n", w)
-				warnings = append(warnings, w)
+				checks = append(checks, preflightCheck{"models", checkWarn,
+					fmt.Sprintf("Could not reach OpenRouter to validate models (%v); format check passed", apiErr)})
 			}
 		} else {
 			var unknown []string
@@ -539,33 +567,65 @@ func runPreflight(g *dot.Graph, workDir, model, modelOverride string, budgetToke
 				}
 			}
 			if len(unknown) > 0 {
-				fmt.Printf("    [FAIL] Model IDs not found on OpenRouter: %s\n", strings.Join(unknown, ", "))
-				failures = append(failures, fmt.Sprintf("model IDs not found on OpenRouter: %s", strings.Join(unknown, ", ")))
+				checks = append(checks, preflightCheck{"models", checkFail,
+					fmt.Sprintf("model IDs not found on OpenRouter: %s", strings.Join(unknown, ", "))})
 			} else {
-				fmt.Printf("    [ok] All %d model IDs verified on OpenRouter\n", len(allModels))
+				checks = append(checks, preflightCheck{"models", checkPass,
+					fmt.Sprintf("All %d model IDs verified on OpenRouter", len(allModels))})
 			}
 		}
 	}
 
-	// 5. Budget sanity check (warnings only).
+	// 5. Budget sanity check.
 	codergenCount := 0
-	for _, n := range g.Nodes {
+	for _, n := range cfg.Graph.Nodes {
 		if n.Shape() == "box" || n.Type() == "codergen" {
 			codergenCount++
 		}
 	}
-	if budgetTokens > 0 && budgetTokens < 100_000 && codergenCount > 1 {
-		w := fmt.Sprintf("Budget is very low (%d tokens) for a %d-stage pipeline; stages may be cut short", budgetTokens, codergenCount)
-		fmt.Printf("    [!!] %s\n", w)
-		warnings = append(warnings, w)
-	} else if budgetTokens > 20_000_000 {
-		w := fmt.Sprintf("Budget is very high (%d tokens); consider lowering for safety", budgetTokens)
-		fmt.Printf("    [!!] %s\n", w)
-		warnings = append(warnings, w)
+	if cfg.BudgetTokens > 0 && cfg.BudgetTokens < 100_000 && codergenCount > 1 {
+		checks = append(checks, preflightCheck{"budget", checkWarn,
+			fmt.Sprintf("Budget is very low (%d tokens) for a %d-stage pipeline; stages may be cut short", cfg.BudgetTokens, codergenCount)})
+	} else if cfg.BudgetTokens > 20_000_000 {
+		checks = append(checks, preflightCheck{"budget", checkWarn,
+			fmt.Sprintf("Budget is very high (%d tokens); consider lowering for safety", cfg.BudgetTokens)})
 	} else {
-		fmt.Printf("    [ok] Budget is reasonable\n")
+		checks = append(checks, preflightCheck{"budget", checkPass, "Budget is reasonable"})
 	}
 
+	return checks
+}
+
+// printPreflightChecks renders structured check results to stdout using the
+// same [ok] / [FAIL] / [--] / [!!] format as before.
+func printPreflightChecks(checks []preflightCheck) {
+	for _, c := range checks {
+		switch c.Status {
+		case checkPass:
+			fmt.Printf("    [ok] %s\n", c.Detail)
+		case checkFail:
+			fmt.Printf("    [FAIL] %s\n", c.Detail)
+		case checkSkip:
+			fmt.Printf("    [--] %s (skipped: %s)\n", c.Name, c.Detail)
+		case checkWarn:
+			fmt.Printf("    [!!] %s\n", c.Detail)
+		}
+	}
+}
+
+// preflightChecksToResult converts structured checks into the legacy
+// preflightResult for backward compatibility with the run() call site.
+func preflightChecksToResult(checks []preflightCheck) preflightResult {
+	var warnings []string
+	var failures []string
+	for _, c := range checks {
+		switch c.Status {
+		case checkFail:
+			failures = append(failures, c.Detail)
+		case checkWarn:
+			warnings = append(warnings, c.Detail)
+		}
+	}
 	if len(failures) > 0 {
 		return preflightResult{
 			warnings: warnings,
