@@ -513,6 +513,114 @@ func TestRunTaskCapture_ReadLoopTermination(t *testing.T) {
 	}
 }
 
+// --- runLoop tests ---
+
+func TestRunLoop_TextOnlyResponse(t *testing.T) {
+	mock := &mockCompleter{responses: []llm.Response{textResponse("hello")}}
+	conversation := []llm.Message{llm.SystemMessage("sys"), llm.UserMessage("prompt")}
+	toolDefs := testRegistry().Definitions()
+
+	result, err := runLoop(context.Background(), mock, "test-model", conversation, toolDefs, testRegistry(), t.TempDir(), loopConfig{MaxRounds: 10})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Text != "hello" {
+		t.Errorf("text = %q, want %q", result.Text, "hello")
+	}
+	if result.Rounds != 1 {
+		t.Errorf("rounds = %d, want 1", result.Rounds)
+	}
+}
+
+func TestRunLoop_ToolCallThenText(t *testing.T) {
+	mock := &mockCompleter{responses: []llm.Response{
+		toolCallResponse("c1", "read_file", map[string]interface{}{"path": "x.go"}),
+		textResponse("done"),
+	}}
+	conversation := []llm.Message{llm.SystemMessage("sys"), llm.UserMessage("prompt")}
+	toolDefs := testRegistry().Definitions()
+
+	result, err := runLoop(context.Background(), mock, "test-model", conversation, toolDefs, testRegistry(), t.TempDir(), loopConfig{MaxRounds: 10})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Rounds != 2 {
+		t.Errorf("rounds = %d, want 2", result.Rounds)
+	}
+	if result.Usage.TotalTokens != 45 {
+		t.Errorf("total tokens = %d, want 45 (30+15)", result.Usage.TotalTokens)
+	}
+}
+
+func TestRunLoop_RoundLimit(t *testing.T) {
+	mock := &mixedToolCallCompleter{}
+	conversation := []llm.Message{llm.SystemMessage("sys"), llm.UserMessage("prompt")}
+	toolDefs := testRegistry().Definitions()
+
+	_, err := runLoop(context.Background(), mock, "test-model", conversation, toolDefs, testRegistry(), t.TempDir(), loopConfig{MaxRounds: 5})
+	if !errors.Is(err, ErrRoundLimitReached) {
+		t.Fatalf("expected ErrRoundLimitReached, got: %v", err)
+	}
+}
+
+func TestRunLoop_ReadLoopDetection(t *testing.T) {
+	mock := &infiniteToolCallCompleter{}
+	conversation := []llm.Message{llm.SystemMessage("sys"), llm.UserMessage("prompt")}
+	toolDefs := testRegistry().Definitions()
+
+	result, err := runLoop(context.Background(), mock, "test-model", conversation, toolDefs, testRegistry(), t.TempDir(), loopConfig{
+		MaxRounds:      20,
+		DetectReadLoop: true,
+	})
+	if !errors.Is(err, ErrReadLoopDetected) {
+		t.Fatalf("expected ErrReadLoopDetected, got: %v", err)
+	}
+	if result.Rounds != 15 {
+		t.Errorf("rounds = %d, want 15", result.Rounds)
+	}
+}
+
+func TestRunLoop_ReadLoopDisabled(t *testing.T) {
+	mock := &infiniteToolCallCompleter{}
+	conversation := []llm.Message{llm.SystemMessage("sys"), llm.UserMessage("prompt")}
+	toolDefs := testRegistry().Definitions()
+
+	_, err := runLoop(context.Background(), mock, "test-model", conversation, toolDefs, testRegistry(), t.TempDir(), loopConfig{
+		MaxRounds:      7,
+		DetectReadLoop: false,
+	})
+	if !errors.Is(err, ErrRoundLimitReached) {
+		t.Fatalf("expected ErrRoundLimitReached (not read-loop), got: %v", err)
+	}
+}
+
+func TestRunLoop_Callbacks(t *testing.T) {
+	mock := &mockCompleter{responses: []llm.Response{
+		toolCallResponse("c1", "read_file", map[string]interface{}{"path": "x.go"}),
+		textResponse("all done"),
+	}}
+	conversation := []llm.Message{llm.SystemMessage("sys"), llm.UserMessage("prompt")}
+	toolDefs := testRegistry().Definitions()
+
+	var textCalls []string
+	var toolCalls []string
+
+	_, err := runLoop(context.Background(), mock, "test-model", conversation, toolDefs, testRegistry(), t.TempDir(), loopConfig{
+		MaxRounds:    10,
+		OnText:       func(text string) { textCalls = append(textCalls, text) },
+		OnToolResult: func(name, summary string) { toolCalls = append(toolCalls, name) },
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(textCalls) != 1 || textCalls[0] != "all done" {
+		t.Errorf("textCalls = %v, want [all done]", textCalls)
+	}
+	if len(toolCalls) != 1 || toolCalls[0] != "read_file" {
+		t.Errorf("toolCalls = %v, want [read_file]", toolCalls)
+	}
+}
+
 func TestRunTaskCapture_ReadLoopResetsOnWrite(t *testing.T) {
 	// 4 read rounds, then 1 write, then 4 more reads, then text.
 	// Should NOT trigger read-loop detection (never hits 5 consecutive).

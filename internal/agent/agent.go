@@ -60,28 +60,35 @@ type Completer interface {
 	Complete(ctx context.Context, req llm.Request) (llm.Response, error)
 }
 
-// RunTask executes an agentic loop: sends a prompt to the LLM with tool
-// definitions, executes any tool calls the model requests, feeds results back,
-// and repeats until the model responds with text only or the round limit is hit.
-//
-// Unlike RunTaskCapture, this function does not track failure demand — it is
-// the simpler CLI-facing path used by cmd/test-agent for smoke tests.
-//
-// The caller must supply a pre-built tool registry. Use tools.DefaultRegistry
-// to construct one with the standard tool set.
-func RunTask(ctx context.Context, client Completer, model, prompt, workDir string, registry *tools.Registry) error {
-	systemPrompt := BuildSystemPrompt(workDir)
+// loopConfig controls the behavior of the shared agent loop.
+type loopConfig struct {
+	MaxRounds      int
+	DetectReadLoop bool
+	OnText         func(text string)
+	OnToolResult   func(name, summary string)
+}
 
-	conversation := []llm.Message{
-		llm.SystemMessage(systemPrompt),
-		llm.UserMessage(prompt),
-	}
+// loopResult carries all outputs from a completed agent loop.
+type loopResult struct {
+	Text         string
+	Usage        llm.Usage
+	Rounds       int
+	Conversation []llm.Message
+	Demand       *demandTracker
+}
 
-	toolDefs := registry.Definitions()
+// runLoop is the shared agent execution core. Both RunTask and RunTaskCapture
+// delegate to this function, differing only in their loopConfig (callbacks,
+// read-loop detection).
+func runLoop(ctx context.Context, client Completer, model string, conversation []llm.Message, toolDefs []llm.ToolDefinition, registry *tools.Registry, workDir string, cfg loopConfig) (loopResult, error) {
+	var lastText string
 	var totalUsage llm.Usage
+	var consecutiveReadOnlyRounds int
+	var nudgeCount int
+	demand := newDemandTracker()
 
-	for round := 0; round < maxRounds; round++ {
-		slog.Info("agent.round", "round", round+1, "max", maxRounds)
+	for round := 0; round < cfg.MaxRounds; round++ {
+		slog.Info("agent.round", "round", round+1, "max", cfg.MaxRounds)
 		compressed := compressHistory(conversation, defaultKeepFullRounds)
 		resp, err := client.Complete(ctx, llm.Request{
 			Model:              model,
@@ -91,41 +98,122 @@ func RunTask(ctx context.Context, client Completer, model, prompt, workDir strin
 			ReasoningMaxTokens: defaultReasoningMaxTokens,
 		})
 		if err != nil {
-			return fmt.Errorf("agent: LLM call failed on round %d: %w", round, err)
+			return loopResult{Text: lastText, Usage: totalUsage, Rounds: round, Conversation: conversation, Demand: demand},
+				fmt.Errorf("agent: LLM call failed on round %d: %w", round, err)
 		}
 
 		totalUsage = totalUsage.Add(resp.Usage)
 
 		if text := resp.Text(); text != "" {
-			fmt.Printf("[assistant] %s\n", text)
+			lastText = text
 			slog.Debug("agent.assistant", "text", summarize(text, 200))
+			if cfg.OnText != nil {
+				cfg.OnText(text)
+			}
 		}
 
 		toolCalls := resp.ToolCalls()
 		if len(toolCalls) == 0 {
-			slog.Info("agent.complete", "rounds", round+1, "tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens)
-			fmt.Printf("[done] Total usage: in=%d out=%d total=%d\n",
-				totalUsage.InputTokens, totalUsage.OutputTokens, totalUsage.TotalTokens)
-			return nil
+			slog.Info("agent.complete", "rounds", round+1,
+				"tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens,
+				"value_calls", demand.ValueCalls, "failure_calls", demand.FailureCalls,
+				"failure_demand_ratio", demand.ratio())
+			return loopResult{Text: lastText, Usage: totalUsage, Rounds: round + 1, Conversation: conversation, Demand: demand}, nil
 		}
 
 		conversation = append(conversation, resp.Message)
 
 		for _, tc := range toolCalls {
 			result := executeTool(ctx, registry, tc, workDir)
+			demand.classify(tc)
 			slog.Info("agent.tool", "tool", tc.Name, "result_bytes", len(result.Content), "is_error", result.IsError)
-			fmt.Printf("[tool] %s -> %s\n", tc.Name, summarize(result.Content, 120))
+			if cfg.OnToolResult != nil {
+				cfg.OnToolResult(tc.Name, summarize(result.Content, 120))
+			}
 			conversation = append(conversation, llm.ToolResultMessage(
 				result.ToolCallID,
 				result.Content,
 				result.IsError,
 			))
 		}
+
+		if cfg.DetectReadLoop && isReadOnlyRound(toolCalls) {
+			consecutiveReadOnlyRounds++
+			if consecutiveReadOnlyRounds >= readLoopThreshold {
+				slog.Warn("agent.read_loop_detected",
+					"consecutive_read_rounds", consecutiveReadOnlyRounds,
+					"round", round+1,
+					"nudge_count", nudgeCount,
+					"tokens_in", totalUsage.InputTokens,
+					"tokens_out", totalUsage.OutputTokens,
+				)
+				if nudgeCount < maxNudges {
+					nudgeCount++
+					nudgeMsg := fmt.Sprintf(
+						"[PIPELINE ENGINE] You have been reading files for %d consecutive rounds "+
+							"without writing any output. Remember to maintain working notes in _scratch/ "+
+							"as you go. If you have gathered enough information, begin writing your "+
+							"deliverables now.", consecutiveReadOnlyRounds)
+					conversation = append(conversation, llm.UserMessage(nudgeMsg))
+					slog.Info("agent.read_loop_nudge", "nudge_count", nudgeCount, "round", round+1)
+					consecutiveReadOnlyRounds = 0
+				} else {
+					slog.Warn("agent.read_loop_terminated",
+						"round", round+1,
+						"nudge_count", nudgeCount,
+						"tokens_in", totalUsage.InputTokens,
+						"tokens_out", totalUsage.OutputTokens,
+						"value_calls", demand.ValueCalls, "failure_calls", demand.FailureCalls,
+						"failure_demand_ratio", demand.ratio(),
+					)
+					return loopResult{Text: lastText, Usage: totalUsage, Rounds: round + 1, Conversation: conversation, Demand: demand}, ErrReadLoopDetected
+				}
+			}
+		} else if !isReadOnlyRound(toolCalls) {
+			consecutiveReadOnlyRounds = 0
+			nudgeCount = 0
+		}
 	}
 
-	slog.Warn("agent.round_limit", "rounds", maxRounds, "tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens)
-	fmt.Printf("[warning] Round limit (%d) reached. Stopping.\n", maxRounds)
-	return ErrRoundLimitReached
+	slog.Warn("agent.round_limit", "rounds", cfg.MaxRounds,
+		"tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens,
+		"value_calls", demand.ValueCalls, "failure_calls", demand.FailureCalls,
+		"failure_demand_ratio", demand.ratio())
+	return loopResult{Text: lastText, Usage: totalUsage, Rounds: cfg.MaxRounds, Conversation: conversation, Demand: demand}, ErrRoundLimitReached
+}
+
+// RunTask executes an agentic loop: sends a prompt to the LLM with tool
+// definitions, executes any tool calls the model requests, feeds results back,
+// and repeats until the model responds with text only or the round limit is hit.
+//
+// Unlike RunTaskCapture, this function prints progress to stdout — it is
+// the simpler CLI-facing path used by cmd/test-agent for smoke tests.
+//
+// The caller must supply a pre-built tool registry. Use tools.DefaultRegistry
+// to construct one with the standard tool set.
+func RunTask(ctx context.Context, client Completer, model, prompt, workDir string, registry *tools.Registry) error {
+	systemPrompt := BuildSystemPrompt(workDir)
+	conversation := []llm.Message{
+		llm.SystemMessage(systemPrompt),
+		llm.UserMessage(prompt),
+	}
+
+	result, err := runLoop(ctx, client, model, conversation, registry.Definitions(), registry, workDir, loopConfig{
+		MaxRounds: maxRounds,
+		OnText: func(text string) {
+			fmt.Printf("[assistant] %s\n", text)
+		},
+		OnToolResult: func(name, summary string) {
+			fmt.Printf("[tool] %s -> %s\n", name, summary)
+		},
+	})
+	if err == nil {
+		fmt.Printf("[done] Total usage: in=%d out=%d total=%d\n",
+			result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens)
+	} else if errors.Is(err, ErrRoundLimitReached) {
+		fmt.Printf("[warning] Round limit (%d) reached. Stopping.\n", maxRounds)
+	}
+	return err
 }
 
 // executeTool looks up a tool call in the registry and executes it. Unknown
@@ -176,105 +264,16 @@ func RunTaskCapture(ctx context.Context, client Completer, model, prompt, workDi
 	}
 
 	systemPrompt := BuildSystemPrompt(workDir)
-
 	conversation := []llm.Message{
 		llm.SystemMessage(systemPrompt),
 		llm.UserMessage(prompt),
 	}
 
-	toolDefs := registry.Definitions()
-	var lastText string
-	var totalUsage llm.Usage
-	var consecutiveReadOnlyRounds int
-	var nudgeCount int
-	demand := newDemandTracker()
-
-	for round := 0; round < limit; round++ {
-		slog.Info("agent.round", "round", round+1, "max", limit)
-		compressed := compressHistory(conversation, defaultKeepFullRounds)
-		resp, err := client.Complete(ctx, llm.Request{
-			Model:              model,
-			Messages:           compressed,
-			Tools:              toolDefs,
-			MaxTokens:          defaultMaxTokens,
-			ReasoningMaxTokens: defaultReasoningMaxTokens,
-		})
-		if err != nil {
-			return "", totalUsage, round, conversation, fmt.Errorf("agent: LLM call failed on round %d: %w", round, err)
-		}
-
-		totalUsage = totalUsage.Add(resp.Usage)
-
-		if text := resp.Text(); text != "" {
-			lastText = text
-			slog.Debug("agent.assistant", "text", summarize(text, 200))
-		}
-
-		toolCalls := resp.ToolCalls()
-		if len(toolCalls) == 0 {
-			slog.Info("agent.complete", "rounds", round+1,
-				"tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens,
-				"value_calls", demand.ValueCalls, "failure_calls", demand.FailureCalls,
-				"failure_demand_ratio", demand.ratio())
-			return lastText, totalUsage, round + 1, conversation, nil
-		}
-
-		conversation = append(conversation, resp.Message)
-
-		for _, tc := range toolCalls {
-			result := executeTool(ctx, registry, tc, workDir)
-			demand.classify(tc)
-			slog.Info("agent.tool", "tool", tc.Name, "result_bytes", len(result.Content), "is_error", result.IsError)
-			conversation = append(conversation, llm.ToolResultMessage(
-				result.ToolCallID,
-				result.Content,
-				result.IsError,
-			))
-		}
-
-		if isReadOnlyRound(toolCalls) {
-			consecutiveReadOnlyRounds++
-			if consecutiveReadOnlyRounds >= readLoopThreshold {
-				slog.Warn("agent.read_loop_detected",
-					"consecutive_read_rounds", consecutiveReadOnlyRounds,
-					"round", round+1,
-					"nudge_count", nudgeCount,
-					"tokens_in", totalUsage.InputTokens,
-					"tokens_out", totalUsage.OutputTokens,
-				)
-				if nudgeCount < maxNudges {
-					nudgeCount++
-					nudgeMsg := fmt.Sprintf(
-						"[PIPELINE ENGINE] You have been reading files for %d consecutive rounds "+
-							"without writing any output. Remember to maintain working notes in _scratch/ "+
-							"as you go. If you have gathered enough information, begin writing your "+
-							"deliverables now.", consecutiveReadOnlyRounds)
-					conversation = append(conversation, llm.UserMessage(nudgeMsg))
-					slog.Info("agent.read_loop_nudge", "nudge_count", nudgeCount, "round", round+1)
-					consecutiveReadOnlyRounds = 0
-				} else {
-					slog.Warn("agent.read_loop_terminated",
-						"round", round+1,
-						"nudge_count", nudgeCount,
-						"tokens_in", totalUsage.InputTokens,
-						"tokens_out", totalUsage.OutputTokens,
-						"value_calls", demand.ValueCalls, "failure_calls", demand.FailureCalls,
-						"failure_demand_ratio", demand.ratio(),
-					)
-					return lastText, totalUsage, round + 1, conversation, ErrReadLoopDetected
-				}
-			}
-		} else {
-			consecutiveReadOnlyRounds = 0
-			nudgeCount = 0 // a write proves the agent isn't stuck; reset for future read phases
-		}
-	}
-
-	slog.Warn("agent.round_limit", "rounds", limit,
-		"tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens,
-		"value_calls", demand.ValueCalls, "failure_calls", demand.FailureCalls,
-		"failure_demand_ratio", demand.ratio())
-	return lastText, totalUsage, limit, conversation, ErrRoundLimitReached
+	result, err := runLoop(ctx, client, model, conversation, registry.Definitions(), registry, workDir, loopConfig{
+		MaxRounds:      limit,
+		DetectReadLoop: true,
+	})
+	return result.Text, result.Usage, result.Rounds, result.Conversation, err
 }
 
 // summarize returns the first n characters of s, appending "..." if truncated.
