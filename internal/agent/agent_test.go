@@ -285,6 +285,19 @@ func (m *mixedToolCallCompleter) Complete(_ context.Context, _ llm.Request) (llm
 	}, nil
 }
 
+func TestRunTask_RoundLimitReturnsError(t *testing.T) {
+	mock := &mixedToolCallCompleter{}
+
+	err := RunTask(context.Background(), mock, "test-model", "do infinite work", t.TempDir(), testRegistry())
+
+	if !errors.Is(err, ErrRoundLimitReached) {
+		t.Fatalf("expected ErrRoundLimitReached, got: %v", err)
+	}
+	if diff := cmp.Diff(maxRounds, mock.callCount); diff != "" {
+		t.Errorf("expected exactly maxRounds LLM calls (-want +got):\n%s", diff)
+	}
+}
+
 func TestRunTaskCapture_RoundLimitReached(t *testing.T) {
 	mock := &mixedToolCallCompleter{}
 

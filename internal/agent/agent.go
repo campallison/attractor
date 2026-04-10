@@ -125,7 +125,7 @@ func RunTask(ctx context.Context, client Completer, model, prompt, workDir strin
 
 	slog.Warn("agent.round_limit", "rounds", maxRounds, "tokens_in", totalUsage.InputTokens, "tokens_out", totalUsage.OutputTokens)
 	fmt.Printf("[warning] Round limit (%d) reached. Stopping.\n", maxRounds)
-	return nil
+	return ErrRoundLimitReached
 }
 
 // executeTool looks up a tool call in the registry and executes it. Unknown
