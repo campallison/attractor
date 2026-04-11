@@ -1,13 +1,13 @@
 package llm
 
 import (
-	"bufio"
 	"context"
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 	"time"
+
+	"github.com/campallison/attractor/internal/envfile"
 )
 
 // Client is the entry point for making LLM requests. Currently backed by OpenRouter.
@@ -137,31 +137,13 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 // key=value pairs as environment variables (only if the key is not already set).
 // It silently ignores missing files and malformed lines.
 func loadDotEnv() {
-	f, err := os.Open(".env")
+	data, err := os.ReadFile(".env")
 	if err != nil {
 		return
 	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, found := strings.Cut(line, "=")
-		if !found {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		// Strip surrounding quotes if present.
-		if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') ||
-			(value[0] == '\'' && value[len(value)-1] == '\'')) {
-			value = value[1 : len(value)-1]
-		}
-		if os.Getenv(key) == "" {
-			os.Setenv(key, value)
+	for k, v := range envfile.Parse(string(data)) {
+		if os.Getenv(k) == "" {
+			os.Setenv(k, v)
 		}
 	}
 }
