@@ -32,6 +32,7 @@ attractor/
 │   ├── dot/                 # Layer 3: DOT lexer, parser, and graph model
 │   ├── pipeline/            # Layer 3: Execution engine, handlers, context, checkpoint, validation
 │   ├── consistency/         # Static analysis checks for generated code (route-handler agreement, etc.)
+│   ├── envfile/             # Pure .env file parser (no I/O, no globals)
 │   ├── store/               # Observability: PostgreSQL persistence for run/stage/event data
 │   └── logging/             # Structured logging setup (slog multi-handler)
 ├── pipelines/               # DOT pipeline definitions
@@ -76,9 +77,23 @@ go test ./... -v
 # Run tests for a specific package
 go test ./internal/dot/ -v
 go test ./internal/pipeline/ -v
+
+# Simulate-mode pipeline smoke test (no API key or Docker needed)
+go run ./cmd/run-pipeline -pipeline pipelines/smoke-test.dot -workdir $(mktemp -d) -simulate
 ```
 
-All tests are table-driven and use [go-cmp](https://pkg.go.dev/github.com/google/go-cmp/cmp) for assertions. Tests do not require an API key or network access.
+All unit tests are table-driven and use [go-cmp](https://pkg.go.dev/github.com/google/go-cmp/cmp) for assertions. Tests do not require an API key or network access.
+
+The simulate-mode smoke test exercises the full pipeline integration (parsing, validation, preflight, multi-stage execution, context carryover, conditional edges, checkpoints, and summary generation) using a `SimulatedBackend` that returns canned responses. It runs in under a second and catches integration regressions that unit tests miss.
+
+## Pre-Push Hook
+
+A git pre-push hook is installed at `.git/hooks/pre-push`. It runs automatically before every `git push` and blocks the push if either check fails:
+
+1. Full unit test suite (`go test ./...`)
+2. Simulate-mode pipeline smoke test
+
+Skip with `git push --no-verify` when needed.
 
 ## Smoke Tests
 

@@ -27,6 +27,7 @@ graph TB
     subgraph infra [Infrastructure]
         loggingPkg["internal/logging"]
         storePkg["internal/store"]
+        envfilePkg["internal/envfile"]
     end
 
     subgraph entrypoints [Entry Points]
@@ -79,7 +80,7 @@ graph LR
     dot --> pipeline
 ```
 
-Key property: `internal/dot` depends on nothing internal. `internal/pipeline` depends on `internal/dot` (for graph types), `internal/agent` (for the codergen backend adapter), and `internal/store` (for the `RunRecorder` interface). `internal/agent` depends on `internal/llm` and `internal/tools`. `internal/logging` and `internal/store` depend on nothing internal and are used by the runner entry point. This forms a clean DAG with no risk of circular imports.
+Key property: `internal/dot` depends on nothing internal. `internal/pipeline` depends on `internal/dot` (for graph types), `internal/agent` (for the codergen backend adapter), and `internal/store` (for the `RunRecorder` interface). `internal/agent` depends on `internal/llm` and `internal/tools`. `internal/logging`, `internal/store`, and `internal/envfile` depend on nothing internal. `internal/envfile` provides a pure `.env` parser used by `cmd/run-pipeline`, `cmd/test-pipeline`, and `internal/llm` — replacing three independent implementations with one shared, tested function. This forms a clean DAG with no risk of circular imports.
 
 ---
 
@@ -156,7 +157,7 @@ ProviderError         -- base type for HTTP errors
 | File | Lines | Purpose |
 |---|---|---|
 | `types.go` | 187 | All data types: Message, Request, Response, ToolCall, etc. |
-| `client.go` | 120 | Client struct, NewClient, NewClientFromEnv, Complete, .env loader |
+| `client.go` | 110 | Client struct, NewClient, NewClientFromEnv, Complete, .env loader (delegates parsing to `internal/envfile`) |
 | `openrouter.go` | 338 | OpenRouter wire format: request building, response parsing, HTTP call |
 | `errors.go` | 134 | Error type hierarchy and HTTP status classification |
 
@@ -255,7 +256,7 @@ This preserves the beginning (context) and end (usually the result) of long outp
 
 Both functions accept a `*tools.Registry` from the caller instead of constructing one internally. This enables per-run sandbox identity: the registry is built once with a run-scoped container name and injected into the agent, keeping the agent layer free of global state.
 
-Both run the identical agent loop; `RunTaskCapture` was added for Layer 3 so the pipeline engine can capture LLM responses without stdout side effects. It returns the final text, the total `llm.Usage` accumulated across all LLM calls in the loop, the number of rounds executed, and the full conversation history (saved as `conversation.json` for post-mortem analysis).
+Both are thin wrappers over a shared `runLoop` function that contains the actual send-execute-repeat cycle. The wrappers differ only in configuration: `RunTask` provides `OnText` and `OnToolResult` callbacks for stdout printing, while `RunTaskCapture` enables `DetectReadLoop` for pipeline-mode read-loop termination. This design eliminates duplication while keeping the public API stable. `loopConfig` controls behavioral variations; `loopResult` carries all outputs.
 
 **Agent exhaustion:** When the agent hits the round limit without producing a text-only response, `RunTaskCapture` returns `agent.ErrRoundLimitReached`. This sentinel error causes the pipeline's codergen handler to report `StatusFail`, preventing silent failures from being treated as success. The round limit defaults to 50 but can be overridden per-stage via the `max_rounds` DOT attribute, allowing simpler stages to fail fast while complex stages get more room.
 
@@ -271,7 +272,7 @@ Both run the identical agent loop; `RunTaskCapture` was added for Layer 3 so the
 
 | File | Purpose |
 |---|---|
-| `agent/agent.go` | RunTask, RunTaskCapture (with usage tracking, exhaustion detection, read-loop detection + nudge injection, failure demand tracking), executeTool, round loop |
+| `agent/agent.go` | runLoop (shared core loop with configurable callbacks and read-loop detection), RunTask, RunTaskCapture (thin wrappers), executeTool, failure demand tracking |
 | `agent/demand.go` | Failure demand classification: value vs. failure demand heuristics for tool calls, ratio computation |
 | `agent/prompt.go` | BuildSystemPrompt with structured methodology (read/plan/implement/check), env context, git deny-list rules, network rules, working memory convention (`_scratch/`) |
 | `agent/compress.go` | Conversation history compression (summarizes old tool results to reduce token costs) |
@@ -755,7 +756,7 @@ Each pipeline execution produces:
 | `pipeline/context.go` | Thread-safe key-value context |
 | `pipeline/condition.go` | Condition expression evaluator |
 | `pipeline/handler.go` | Handler interface, HandlerRegistry, shape mapping |
-| `pipeline/handlers.go` | Start, Exit, Conditional, Codergen handlers (with build gate and scratch lifecycle), CheckRunner, BackendResult, backends |
+| `pipeline/handlers.go` | Start, Exit, Conditional, Codergen handlers (with build gate and scratch lifecycle), CheckRunner, BackendResult, backends, extracted helpers (captureFilesystemDiff, toFileDiffCounts, runBuildGate, exhaustionMessage, applyGateResults) |
 | `pipeline/checkparse.go` | Build gate check output parsing: `[CHECK:name] PASS/FAIL` marker extraction and structured retry prompt construction |
 | `pipeline/scratch.go` | Scratch directory lifecycle: SetupScratch, ArchiveAndCleanScratch, copyDir |
 | `pipeline/snapshot.go` | Filesystem observation: SnapshotDir, DiffSnapshots, FileDiff |
@@ -1099,6 +1100,8 @@ All packages use Go's `log/slog` for structured, leveled logging. The `logging` 
 - **Terminal (stderr):** `slog.TextHandler` at INFO level -- concise, human-readable output during pipeline runs
 - **Log file (JSON):** `slog.JSONHandler` at DEBUG level -- machine-readable, comprehensive log for post-mortem analysis
 
+`logging.Setup(logFilePath)` returns `(cleanup func(), err error)`. The cleanup closure closes the log file handle; the caller defers it. This avoids package-level mutable state -- no global `logFile` variable -- and makes the lifecycle explicit and testable.
+
 Key log events across the codebase:
 
 | Package | Event | Level |
@@ -1123,7 +1126,9 @@ The runner is a reference entry point that demonstrates how to execute an Attrac
 5. **Run** the pipeline
 6. **Report** results and write `summary.json`
 
-**Container lifecycle:** The runner's `main()` delegates to `run() int` and calls `os.Exit(run())`. This ensures all `defer`-registered cleanup (Docker sandbox stop, companion DB teardown, log file close) executes on every exit path — including pipeline failures and execution errors. Without this pattern, `os.Exit()` and `log.Fatalf()` skip deferred functions, leaking containers.
+**Container lifecycle:** The runner's `main()` delegates to `run() int` and calls `os.Exit(run())`. This ensures all `defer`-registered cleanup (Docker sandbox stop, companion DB teardown, log file close) executes on every exit path — including pipeline failures and execution errors. Without this pattern, `os.Exit()` and `log.Fatalf()` skip deferred functions, leaking containers. Docker lifecycle (container setup, check tool provisioning, companion DB) is managed by `setupSandbox`, which takes injected `sandboxOps` functions for testability and returns a composed `Cleanup` function that tears down resources in reverse order.
+
+**Pre-flight checks:** `evaluatePreflight` runs all validations and returns structured `[]preflightCheck` results without printing. Presentation is handled separately by `printPreflightChecks`. This separation makes the validation logic testable without stdout capture.
 
 Key flags:
 
@@ -1172,3 +1177,4 @@ All tests follow consistent patterns:
 - **`failingBackend`** and **`exhaustedBackend`** for testing error paths through the codergen handler
 - **`buildGateBackend`** with mock `CheckRunner` for testing build gate retry logic
 - **Regression tests** that parse and validate example pipeline DOT files
+- **Simulate-mode smoke test** (`pipelines/smoke-test.dot`) exercises the full pipeline integration without LLM or Docker, run automatically via the pre-push hook
