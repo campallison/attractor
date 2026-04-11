@@ -179,12 +179,7 @@ func (h CodergenHandler) Execute(ctx context.Context, node *dot.Node, pctx *Cont
 		if result.Exhausted {
 			_ = os.WriteFile(filepath.Join(stageDir, "response.md"), []byte(responseText), 0o644)
 			fsDiff := captureFilesystemDiff(h.WorkDir, beforeSnap, node.ID, stageDir)
-			var reason string
-			if result.ExhaustionReason == ExhaustionReadLoop {
-				reason = fmt.Sprintf("agent terminated: persistent read-loop detected after %d rounds", result.Rounds)
-			} else {
-				reason = fmt.Sprintf("agent exhausted round limit (%d) without completing task", result.Rounds)
-			}
+			reason := exhaustionMessage(result.ExhaustionReason, result.Rounds)
 			slog.Warn("pipeline.stage.exhausted", "node", node.ID, "rounds", result.Rounds, "reason", result.ExhaustionReason)
 			outcome := Outcome{
 				Status:           StatusFail,
@@ -208,13 +203,7 @@ func (h CodergenHandler) Execute(ctx context.Context, node *dot.Node, pctx *Cont
 				fsDiff := captureFilesystemDiff(h.WorkDir, beforeSnap, node.ID, stageDir)
 				failed := false
 				buildGatePassed = &failed
-				stageUsage.Rounds += gate.ExtraRounds
-				stageUsage.InputTokens += gate.ExtraUsage.InputTokens
-				stageUsage.OutputTokens += gate.ExtraUsage.OutputTokens
-				stageUsage.TotalTokens += gate.ExtraUsage.TotalTokens
-				if gate.ResponseText != "" {
-					responseText = gate.ResponseText
-				}
+				responseText = applyGateResults(gate, stageUsage, responseText)
 				outcome := Outcome{
 					Status:            StatusFail,
 					FailureReason:     gate.FailureReason,
@@ -232,13 +221,7 @@ func (h CodergenHandler) Execute(ctx context.Context, node *dot.Node, pctx *Cont
 
 			passed := true
 			buildGatePassed = &passed
-			stageUsage.Rounds += gate.ExtraRounds
-			stageUsage.InputTokens += gate.ExtraUsage.InputTokens
-			stageUsage.OutputTokens += gate.ExtraUsage.OutputTokens
-			stageUsage.TotalTokens += gate.ExtraUsage.TotalTokens
-			if gate.ResponseText != "" {
-				responseText = gate.ResponseText
-			}
+			responseText = applyGateResults(gate, stageUsage, responseText)
 		}
 	} else {
 		responseText = "[simulated] response for stage: " + node.ID
@@ -483,6 +466,31 @@ func toFileDiffCounts(fd *FileDiff) *FileDiffCounts {
 		Removed:   len(fd.Removed),
 		Unchanged: fd.Unchanged,
 	}
+}
+
+// exhaustionMessage returns a human-readable failure reason for an exhausted
+// agent. The reason string distinguishes read-loop termination from round-limit
+// exhaustion.
+func exhaustionMessage(reason string, rounds int) string {
+	if reason == ExhaustionReadLoop {
+		return fmt.Sprintf("agent terminated: persistent read-loop detected after %d rounds", rounds)
+	}
+	return fmt.Sprintf("agent exhausted round limit (%d) without completing task", rounds)
+}
+
+// applyGateResults merges build gate usage into the stage-level usage and
+// returns the latest response text (using the gate's response if a fix ran,
+// otherwise keeping the original). Extracted to eliminate duplication between
+// the gate-pass and gate-fail branches of Execute().
+func applyGateResults(gate buildGateResult, usage *StageUsage, responseText string) string {
+	usage.Rounds += gate.ExtraRounds
+	usage.InputTokens += gate.ExtraUsage.InputTokens
+	usage.OutputTokens += gate.ExtraUsage.OutputTokens
+	usage.TotalTokens += gate.ExtraUsage.TotalTokens
+	if gate.ResponseText != "" {
+		return gate.ResponseText
+	}
+	return responseText
 }
 
 // buildGateResult carries the outcome of a build gate retry loop. The caller

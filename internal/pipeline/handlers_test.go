@@ -1690,3 +1690,58 @@ func TestCodergenHandler_ContextCarryover(t *testing.T) {
 		t.Errorf("completed_stages after 2 stages (-want +got):\n%s", diff)
 	}
 }
+
+func TestExhaustionMessage_RoundLimit(t *testing.T) {
+	got := exhaustionMessage("", 25)
+	want := "agent exhausted round limit (25) without completing task"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestExhaustionMessage_ReadLoop(t *testing.T) {
+	got := exhaustionMessage(ExhaustionReadLoop, 12)
+	want := "agent terminated: persistent read-loop detected after 12 rounds"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestApplyGateResults_AccumulatesUsage(t *testing.T) {
+	usage := &StageUsage{
+		Rounds:       5,
+		InputTokens:  1000,
+		OutputTokens: 200,
+		TotalTokens:  1200,
+	}
+	gate := buildGateResult{
+		ExtraRounds: 3,
+		ExtraUsage:  llm.Usage{InputTokens: 500, OutputTokens: 100, TotalTokens: 600},
+		ResponseText: "fixed output",
+	}
+	got := applyGateResults(gate, usage, "original")
+	if usage.Rounds != 8 {
+		t.Errorf("Rounds = %d, want 8", usage.Rounds)
+	}
+	if usage.InputTokens != 1500 {
+		t.Errorf("InputTokens = %d, want 1500", usage.InputTokens)
+	}
+	if usage.OutputTokens != 300 {
+		t.Errorf("OutputTokens = %d, want 300", usage.OutputTokens)
+	}
+	if usage.TotalTokens != 1800 {
+		t.Errorf("TotalTokens = %d, want 1800", usage.TotalTokens)
+	}
+	if got != "fixed output" {
+		t.Errorf("responseText = %q, want %q", got, "fixed output")
+	}
+}
+
+func TestApplyGateResults_KeepsOriginalWhenNoFixRan(t *testing.T) {
+	usage := &StageUsage{Rounds: 5}
+	gate := buildGateResult{ResponseText: ""}
+	got := applyGateResults(gate, usage, "original response")
+	if got != "original response" {
+		t.Errorf("responseText = %q, want %q", got, "original response")
+	}
+}
